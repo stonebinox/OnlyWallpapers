@@ -1,0 +1,20 @@
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode (if ever generated)
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Large media assets (keep the repo light; document where to fetch)
+Sources/OnlyWallpapers/web/assets/*.mp4
+Sources/OnlyWallpapers/web/assets/*.mov
+Sources/OnlyWallpapers/web/assets/*.webm
+
+# Scratch output from Codex/Grok/Sonnet runs
+/tmp/ow-*.md

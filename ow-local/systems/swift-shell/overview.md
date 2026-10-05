@@ -27,11 +27,19 @@ geometry, and web pieces below are still planned.
 
 ## The Desktop-Layer Trick
 A normal window becomes a wallpaper with these settings:
-- `level = CGWindowLevelForKey(.desktopWindow)` (sits below the desktop icons).
+- `level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))`
+  (sits below the desktop icons; the `Int()` cast matters for Int32 sign extension).
 - `collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]`.
 - `ignoresMouseEvents = true` (clicks pass through to icons and Finder).
 - `isOpaque = false`, `backgroundColor = .clear`, `hasShadow = false`.
+- Create the window borderless directly (do not mutate the style mask), retain it,
+  and show with `orderFrontRegardless()` (not `makeKeyAndOrderFront`).
 No private API. The OS treats it as an ordinary window, so it renders forever.
+
+This was validated on Tahoe by the ow-mbw.1 spike: the window renders continuously
+behind icons and does not freeze, even while macOS reports it occluded. See
+`desktop-layer-spike-findings.md` for the measured configuration and the oracle
+lessons. The video (WKWebView) render path is a separate de-risk: bd ow-94b.5.
 
 ## Coordinate Math (the one tricky part)
 `NSScreen` frames live in a shared, bottom-left-origin global space that already

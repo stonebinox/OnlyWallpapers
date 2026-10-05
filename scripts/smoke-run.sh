@@ -8,8 +8,17 @@ echo "=== OnlyWallpapers smoke-run ==="
 
 # --- Step 8: scope guard (run before build to catch forbidden symbols early) ---
 echo "[scope] Checking Sources tree for forbidden identifiers..."
-HITS="$(grep -rnE 'NSWindow|WKWebView|WKWebViewConfiguration|didChangeScreenParametersNotification|Info\.plist' Sources/ --include='*.swift' || true)"
-if [ -n "$HITS" ]; then echo "FAIL: forbidden symbol(s) in Sources/"; echo "$HITS"; exit 1; fi
+
+# WKWebView, WKWebViewConfiguration, didChangeScreenParametersNotification, Info.plist are
+# forbidden in ALL Swift files (including SpikeWindow.swift).
+HITS_ALL="$(grep -rnE 'WKWebView|WKWebViewConfiguration|didChangeScreenParametersNotification|Info\.plist' Sources/ --include='*.swift' || true)"
+if [ -n "$HITS_ALL" ]; then echo "FAIL: forbidden symbol(s) in Sources/"; echo "$HITS_ALL"; exit 1; fi
+
+# NSWindow is forbidden in all Swift files EXCEPT SpikeWindow.swift.
+HITS_NSWINDOW="$(grep -rnE 'NSWindow' Sources/ --include='*.swift' \
+    --exclude='SpikeWindow.swift' || true)"
+if [ -n "$HITS_NSWINDOW" ]; then echo "FAIL: NSWindow found outside SpikeWindow.swift"; echo "$HITS_NSWINDOW"; exit 1; fi
+
 echo "[scope] PASS: no forbidden symbols found"
 
 # --- Step 8b: static setActivationPolicy guard ---
@@ -57,7 +66,7 @@ trap cleanup EXIT
 
 # --- Step 3: launch binary in background ---
 echo "[launch] Starting $BIN..."
-"$BIN" >"$TMPOUT" 2>&1 &
+env -u OW_SPIKE "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[launch] PID: $PID"
 

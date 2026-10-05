@@ -18,3 +18,9 @@ Sources/OnlyWallpapers/web/assets/*.webm
 
 # Scratch output from Codex/Grok/Sonnet runs
 /tmp/ow-*.md
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

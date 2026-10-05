@@ -2,6 +2,6 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "embedded",
-  "dolt_database": "OnlyWallpapers",
-  "project_id": "8c5d0258-68e6-403c-8fd8-79afeb974428"
+  "dolt_database": "ow",
+  "project_id": "33db6e2f-26af-4308-9716-a4bee51b4bb4"
 }

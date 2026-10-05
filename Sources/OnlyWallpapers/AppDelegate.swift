@@ -5,10 +5,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Retained for the process lifetime; SIGINT terminates the app cleanly.
     private var sigintSource: DispatchSourceSignal?
 
-    // Spike: activity token and windows kept alive for the process lifetime.
-    // AnyObject is used so this file does not reference the spike-only window type.
+    // Production wallpaper windows, one per screen (default run).
+    private var wallpaperWindows: [WallpaperWindow] = []
+
+    // WebSpike: activity token and controllers kept alive for the process lifetime.
+    // AnyObject avoids importing WebKit in this file.
     private var spikeActivity: NSObjectProtocol?
-    private var spikeWindows: [AnyObject] = []
+    private var webSpikeControllers: [AnyObject] = []
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let ok = NSApp.setActivationPolicy(.accessory)
@@ -23,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sigintSource = src
     }
 
+    // The wallpaper must survive window close/rebuild (ow-blz.1 rebuilds on display change).
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Sample policy after AppKit completes its launch sequence so the value
         // reflects the final runtime state, not the in-flight state.
@@ -32,12 +38,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let env = ProcessInfo.processInfo.environment
         let owWebSpike = env["OW_WEBSPIKE"] == "1"
-        let owSpikeAndWeb = env["OW_SPIKE"] == "1" && owWebSpike
-
-        if owSpikeAndWeb {
-            FileHandle.standardOutput.write(Data("OW_WEBSPIKE FINDING: OW_SPIKE and OW_WEBSPIKE both set, refusing\n".utf8))
-            return
-        }
 
         if owWebSpike {
             FileHandle.standardOutput.write(Data("OW_WEBSPIKE SCREENS count=\(NSScreen.screens.count)\n".utf8))
@@ -76,25 +76,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for screen in screens {
                     let ctrl = WebSpikeController(screen: screen, webDir: webSpikeDir, filtered: filtered, clearMode: clearMode)
                     ctrl.window.orderFrontRegardless()
-                    spikeWindows.append(ctrl)
+                    webSpikeControllers.append(ctrl)
                 }
             }
-        }
-
-        if ProcessInfo.processInfo.environment["OW_SPIKE"] == "1" {
-            spikeActivity = ProcessInfo.processInfo.beginActivity(
-                options: [.userInitiatedAllowingIdleSystemSleep],
-                reason: "ow-spike"
-            )
-            FileHandle.standardOutput.write(Data("OW_SPIKE activity=held\n".utf8))
+        } else {
+            // Default production path: one WallpaperWindow per screen.
             let screens = NSScreen.screens
-            FileHandle.standardOutput.write(Data("OW_SPIKE SCREENS count=\(screens.count)\n".utf8))
-            if screens.isEmpty {
-                FileHandle.standardOutput.write(Data("OW_SPIKE FINDING: no screens\n".utf8))
-            } else {
-                for screen in screens {
-                    let w = makeSpikeWindowAndShow(for: screen)
-                    spikeWindows.append(w)
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WINDOWS count=\(screens.count)\n".utf8))
+            for screen in screens {
+                let placeholder = PlaceholderWallpaperView(frame: screen.frame)
+                let win = WallpaperWindow(screen: screen, contentView: placeholder)
+                wallpaperWindows.append(win)
+                win.orderFrontRegardless()
+                let name = screen.localizedName
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
+                    win?.logPlacement(screenName: name)
                 }
             }
         }

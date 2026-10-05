@@ -5,25 +5,29 @@ keep them on the desktop layer, and hand each one its slice of the canvas. It is
 meant to be small and stable. Creative work happens in the web layer instead.
 
 Status: partially implemented. The process skeleton (`main.swift` and
-`AppDelegate`, ow-mbw.2) exists and runs as a `.accessory` app. Activation policy
-is set in `applicationWillFinishLaunching` and the runtime value is sampled in
-`applicationDidFinishLaunching` (after AppKit finishes launching). The window,
-geometry, and web pieces below are still planned.
+`AppDelegate`, ow-mbw.2) runs as a `.accessory` app, and the production
+`WallpaperWindow` (ow-mbw.3) exists: the default run creates one per screen with a
+temporary placeholder content view. The `WallpaperController` (union geometry,
+display hot-plug) and `WebWallpaperView` (WKWebView content) below are still planned.
 
 ## Components
 - **main.swift**: sets up `NSApplication`, activation policy `.accessory` (no Dock
   icon, a background utility, no Info.plist needed), runs the app.
-- **AppDelegate**: on launch builds the wallpaper, and rebuilds on
-  `NSApplication.didChangeScreenParametersNotification` (display plug/unplug,
-  arrangement or resolution change).
-- **WallpaperController**: the geometry brain. Builds the union of all
-  `NSScreen.screens` frames (one logical canvas), derives each screen's slice
-  offset, and creates one window per screen. Resolves the web asset directory
-  (env `WALLPAPER_WEB_DIR` override, else the bundled copy).
-- **WallpaperWindow**: a borderless `NSWindow` holding the WebWallpaperView. The
-  desktop-layer trick lives here.
-- **WebWallpaperView**: configures the `WKWebView` (transparent, local file read
-  access) and injects the per-screen slice geometry.
+- **AppDelegate**: sets the accessory policy, installs the SIGINT handler, and (in
+  the default run, ow-mbw.3) creates one `WallpaperWindow` per `NSScreen.screens`
+  with a placeholder content view. Rebuilding on
+  `NSApplication.didChangeScreenParametersNotification` is planned (ow-blz.1), and
+  the per-screen bootstrap moves into `WallpaperController` then.
+- **WallpaperController** (planned, ow-blz.1): the geometry brain. Builds the union
+  of all `NSScreen.screens` frames (one logical canvas), derives each screen's slice
+  offset, owns the per-screen windows, and rebuilds on display hot-plug. Resolves
+  the web asset directory (env `WALLPAPER_WEB_DIR` override, else the bundled copy).
+- **WallpaperWindow** (ow-mbw.3, done): a `final NSWindow` subclass, borderless at
+  the desktop level, content-agnostic (holds whatever content view it is given),
+  `canBecomeKey`/`canBecomeMain` false. The desktop-layer trick lives here. It
+  currently holds a placeholder; ow-94b.1 swaps in `WebWallpaperView`.
+- **WebWallpaperView** (planned, ow-94b.1): configures the `WKWebView` (transparent,
+  local file read access) and injects the per-screen slice geometry.
 
 ## The Desktop-Layer Trick
 A normal window becomes a wallpaper with these settings:

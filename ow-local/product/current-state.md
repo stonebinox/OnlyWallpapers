@@ -22,13 +22,19 @@ Last updated: 2026-10-05
   continuously behind desktop icons on Tahoe and does NOT freeze, even while macOS
   reports it occluded. Confirmed on two displays and two Spaces (behind icons,
   click-through, all Spaces, continuous animation proven by pixel screenshots and a
-  real-time CoreAnimation probe). Spike code is `SpikeWindow.swift` (gated by
-  `OW_SPIKE=1`, kept until ow-mbw.3 copies the factory). Measured config and oracle
-  lessons: `systems/swift-shell/desktop-layer-spike-findings.md`.
+  real-time CoreAnimation probe). The spike (`SpikeWindow.swift`) was superseded and
+  REMOVED in ow-mbw.3. Measured config and oracle lessons:
+  `systems/swift-shell/desktop-layer-spike-findings.md`.
+- ow-mbw.3 (done): the production `WallpaperWindow` (a `final NSWindow` subclass,
+  borderless desktop-layer, content-agnostic, `canBecomeKey`/`canBecomeMain` false).
+  The default run now creates one per `NSScreen.screens` with a temporary placeholder
+  content view (deep-teal fill), verified behind icons on both displays
+  (`zorder_ok=true`) by smoke. The ow-mbw.1 spike was removed. ow-94b.1 swaps the
+  placeholder for `WebWallpaperView`.
 
 ### Not Done
-- Remaining Swift sources: `WallpaperController`, `WallpaperWindow`,
-  `WebWallpaperView`.
+- Remaining Swift sources: `WallpaperController` (ow-blz.1), `WebWallpaperView`
+  (ow-94b.1).
 - Web layer files (`index.html`, `style.css`, `wallpaper.js`).
 - A sample `bg.mp4` in `web/assets/`.
 - Verifying the wallpaper renders and spans correctly (Phase 5 of later tasks).
@@ -43,7 +49,10 @@ Last updated: 2026-10-05
   slice sync across pause/resume (ow-blz.5).
 
 ### Next Step
-ow-mbw.3 (the real desktop-layer WallpaperWindow, seeding from the spike findings).
+ow-94b.1 (WebWallpaperView: the transparent WKWebView content that replaces the
+WallpaperWindow placeholder) and ow-blz.1 (WallpaperController: union canvas and
+per-screen slice geometry, taking over per-screen window creation and display
+hot-plug). ow-mbw.4 adds the fuller window-config run check.
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

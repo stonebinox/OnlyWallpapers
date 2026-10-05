@@ -3,8 +3,10 @@
 Date: 2026-10-05. Host: macOS 26.5.2 (Tahoe), Apple Silicon, Swift 6.3.3. Two
 displays (BenQ EW2880U, BenQ EL2870U). This records what the spike actually
 validated so ow-mbw.3 can seed the real WallpaperWindow from measured fact, not
-guesswork. The spike code is `Sources/OnlyWallpapers/SpikeWindow.swift` (gated by
-`OW_SPIKE=1`); keep it in-tree until ow-mbw.3 copies the factory, then remove it.
+guesswork. The spike code (`SpikeWindow.swift`, `scripts/spike-check.sh`, the
+`OW_SPIKE` gate) was REMOVED in ow-mbw.3; the production successor is
+`Sources/OnlyWallpapers/WallpaperWindow.swift`, which copies this validated config.
+Recover the spike from git history if needed.
 
 ## Verdict
 A borderless desktop-layer NSWindow renders CONTINUOUSLY behind desktop icons on

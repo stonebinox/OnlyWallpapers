@@ -18,10 +18,10 @@ if [ -n "$HITS_WK" ]; then echo "FAIL: WKWebView/WKWebViewConfiguration found ou
 HITS_FORBIDDEN="$(grep -rnE 'didChangeScreenParametersNotification|Info\.plist' Sources/ --include='*.swift' || true)"
 if [ -n "$HITS_FORBIDDEN" ]; then echo "FAIL: forbidden symbol(s) in Sources/"; echo "$HITS_FORBIDDEN"; exit 1; fi
 
-# NSWindow is forbidden in all Swift files EXCEPT SpikeWindow.swift and WebSpikeWindow.swift.
-HITS_NSWINDOW="$(grep -rnE 'NSWindow' Sources/ --include='*.swift' \
-    --exclude='SpikeWindow.swift' --exclude='WebSpikeWindow.swift' || true)"
-if [ -n "$HITS_NSWINDOW" ]; then echo "FAIL: NSWindow found outside SpikeWindow.swift or WebSpikeWindow.swift"; echo "$HITS_NSWINDOW"; exit 1; fi
+# NSWindow is forbidden in all Swift files EXCEPT WallpaperWindow.swift and WebSpikeWindow.swift.
+HITS_NSWINDOW="$(grep -rnE '\bNSWindow\b' Sources/ --include='*.swift' \
+    --exclude='WallpaperWindow.swift' --exclude='WebSpikeWindow.swift' || true)"
+if [ -n "$HITS_NSWINDOW" ]; then echo "FAIL: NSWindow found outside WallpaperWindow.swift or WebSpikeWindow.swift"; echo "$HITS_NSWINDOW"; exit 1; fi
 
 echo "[scope] PASS: no forbidden symbols found"
 
@@ -123,7 +123,92 @@ if ! kill -0 "$PID" 2>/dev/null; then
 fi
 echo "[alive] PASS: process still alive after 2s"
 
-# --- Step 7: verify SIGINT causes clean exit within ~1s ---
+# --- Step 7a: verify WallpaperWindow placement (default run only) ---
+echo "[windows] Checking ONLYWALLPAPERS_WINDOWS count line..."
+WINDOWS_LINE="$(grep "ONLYWALLPAPERS_WINDOWS count=" "$TMPOUT" | head -1 || true)"
+if [ -z "$WINDOWS_LINE" ]; then
+    echo "FAIL: ONLYWALLPAPERS_WINDOWS count= line not found in output"
+    echo "--- output ---"
+    cat "$TMPOUT" || true
+    exit 1
+fi
+SCREEN_COUNT="$(echo "$WINDOWS_LINE" | sed 's/.*count=\([0-9]*\).*/\1/')"
+echo "[windows] Screen count: $SCREEN_COUNT"
+
+if [ "$SCREEN_COUNT" -eq 0 ]; then
+    echo "[windows] PASS: count=0, no window placement assertions needed"
+else
+    # Poll up to 3s for SCREEN_COUNT ONLYWALLPAPERS_WINDOW lines to appear (asyncAfter 0.5s).
+    for i in $(seq 1 30); do
+        WINDOW_LINE_COUNT="$(grep -c "^ONLYWALLPAPERS_WINDOW " "$TMPOUT" 2>/dev/null || true)"
+        if [ "$WINDOW_LINE_COUNT" -ge "$SCREEN_COUNT" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    # Require exactly N lines (>= already broke the poll; re-count to catch both < N and > N).
+    WINDOW_LINE_COUNT="$(grep -c "^ONLYWALLPAPERS_WINDOW " "$TMPOUT" 2>/dev/null || true)"
+    if [ "$WINDOW_LINE_COUNT" -ne "$SCREEN_COUNT" ]; then
+        echo "FAIL: expected exactly $SCREEN_COUNT ONLYWALLPAPERS_WINDOW line(s), found $WINDOW_LINE_COUNT"
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+
+    # Require N distinct win= values (win= is always unique; screen= names can collide on identical monitors).
+    DISTINCT_WINS="$(grep "^ONLYWALLPAPERS_WINDOW " "$TMPOUT" \
+        | grep -o 'win=[0-9]*' \
+        | sort -u \
+        | wc -l \
+        | tr -d ' ')"
+    if [ "$DISTINCT_WINS" -ne "$SCREEN_COUNT" ]; then
+        echo "FAIL: expected $SCREEN_COUNT distinct win= value(s), found $DISTINCT_WINS (one window may be logging twice)"
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+
+    EXPECTED_LEVEL="-2147483623"
+    BAD=0
+    while IFS= read -r wline; do
+        SCREEN_LABEL="$(echo "$wline" | grep -o 'screen=[^ ]*' | head -1)"
+        if ! echo "$wline" | grep -q "level=${EXPECTED_LEVEL}"; then
+            echo "FAIL: wrong level in $SCREEN_LABEL: $wline"
+            BAD=1
+        fi
+        if ! echo "$wline" | grep -q "zorder_ok=true"; then
+            echo "FAIL: zorder_ok not true in $SCREEN_LABEL: $wline"
+            BAD=1
+        fi
+        if ! echo "$wline" | grep -q "mouse=true"; then
+            echo "FAIL: mouse not true (click-through not set) in $SCREEN_LABEL: $wline"
+            BAD=1
+        fi
+        if ! echo "$wline" | grep -q "cb_allspaces=true"; then
+            echo "FAIL: cb_allspaces not true in $SCREEN_LABEL: $wline"
+            BAD=1
+        fi
+        if ! echo "$wline" | grep -q "cb_stationary=true"; then
+            echo "FAIL: cb_stationary not true in $SCREEN_LABEL: $wline"
+            BAD=1
+        fi
+        if ! echo "$wline" | grep -q "cb_ignorescycle=true"; then
+            echo "FAIL: cb_ignorescycle not true in $SCREEN_LABEL: $wline"
+            BAD=1
+        fi
+    done < <(grep "^ONLYWALLPAPERS_WINDOW " "$TMPOUT")
+
+    if [ "$BAD" -ne 0 ]; then
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+
+    echo "[windows] PASS: $SCREEN_COUNT window(s) at level=$EXPECTED_LEVEL with zorder_ok=true mouse=true cb_allspaces=true cb_stationary=true cb_ignorescycle=true, all on distinct win= numbers"
+fi
+
+# --- Step 7c: verify SIGINT causes clean exit within ~1s ---
 echo "[sigint] Sending SIGINT..."
 kill -INT "$PID"
 GONE=0

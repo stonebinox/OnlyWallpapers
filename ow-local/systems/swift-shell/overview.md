@@ -4,7 +4,11 @@ The native layer. Its only jobs are: open the right windows in the right places,
 keep them on the desktop layer, and hand each one its slice of the canvas. It is
 meant to be small and stable. Creative work happens in the web layer instead.
 
-Status: planned, not yet implemented. This describes the intended design.
+Status: partially implemented. The process skeleton (`main.swift` and
+`AppDelegate`, ow-mbw.2) exists and runs as a `.accessory` app. Activation policy
+is set in `applicationWillFinishLaunching` and the runtime value is sampled in
+`applicationDidFinishLaunching` (after AppKit finishes launching). The window,
+geometry, and web pieces below are still planned.
 
 ## Components
 - **main.swift**: sets up `NSApplication`, activation policy `.accessory` (no Dock

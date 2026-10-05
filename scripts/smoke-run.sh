@@ -9,15 +9,19 @@ echo "=== OnlyWallpapers smoke-run ==="
 # --- Step 8: scope guard (run before build to catch forbidden symbols early) ---
 echo "[scope] Checking Sources tree for forbidden identifiers..."
 
-# WKWebView, WKWebViewConfiguration, didChangeScreenParametersNotification, Info.plist are
-# forbidden in ALL Swift files (including SpikeWindow.swift).
-HITS_ALL="$(grep -rnE 'WKWebView|WKWebViewConfiguration|didChangeScreenParametersNotification|Info\.plist' Sources/ --include='*.swift' || true)"
-if [ -n "$HITS_ALL" ]; then echo "FAIL: forbidden symbol(s) in Sources/"; echo "$HITS_ALL"; exit 1; fi
+# WKWebView and WKWebViewConfiguration are forbidden outside WebSpikeWindow.swift.
+HITS_WK="$(grep -rnE 'WKWebView|WKWebViewConfiguration' Sources/ --include='*.swift' \
+    --exclude='WebSpikeWindow.swift' || true)"
+if [ -n "$HITS_WK" ]; then echo "FAIL: WKWebView/WKWebViewConfiguration found outside WebSpikeWindow.swift"; echo "$HITS_WK"; exit 1; fi
 
-# NSWindow is forbidden in all Swift files EXCEPT SpikeWindow.swift.
+# didChangeScreenParametersNotification and Info.plist are forbidden in ALL Swift files.
+HITS_FORBIDDEN="$(grep -rnE 'didChangeScreenParametersNotification|Info\.plist' Sources/ --include='*.swift' || true)"
+if [ -n "$HITS_FORBIDDEN" ]; then echo "FAIL: forbidden symbol(s) in Sources/"; echo "$HITS_FORBIDDEN"; exit 1; fi
+
+# NSWindow is forbidden in all Swift files EXCEPT SpikeWindow.swift and WebSpikeWindow.swift.
 HITS_NSWINDOW="$(grep -rnE 'NSWindow' Sources/ --include='*.swift' \
-    --exclude='SpikeWindow.swift' || true)"
-if [ -n "$HITS_NSWINDOW" ]; then echo "FAIL: NSWindow found outside SpikeWindow.swift"; echo "$HITS_NSWINDOW"; exit 1; fi
+    --exclude='SpikeWindow.swift' --exclude='WebSpikeWindow.swift' || true)"
+if [ -n "$HITS_NSWINDOW" ]; then echo "FAIL: NSWindow found outside SpikeWindow.swift or WebSpikeWindow.swift"; echo "$HITS_NSWINDOW"; exit 1; fi
 
 echo "[scope] PASS: no forbidden symbols found"
 
@@ -66,7 +70,7 @@ trap cleanup EXIT
 
 # --- Step 3: launch binary in background ---
 echo "[launch] Starting $BIN..."
-env -u OW_SPIKE "$BIN" >"$TMPOUT" 2>&1 &
+env -u OW_SPIKE -u OW_WEBSPIKE "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[launch] PID: $PID"
 

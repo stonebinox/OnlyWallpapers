@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-05
 
-## Status: desktop-layer technique de-risked on Tahoe (ow-mbw.2, ow-mbw.1 done)
+## Status: desktop-layer + WKWebView video both de-risked on Tahoe (ow-mbw.2, ow-mbw.1, ow-94b.5 done)
 
 ### Done
 - Single git repo created at `~/Projects/OnlyWallpapers`.
@@ -31,14 +31,19 @@ Last updated: 2026-10-05
   `WebWallpaperView`.
 - Web layer files (`index.html`, `style.css`, `wallpaper.js`).
 - A sample `bg.mp4` in `web/assets/`.
-- De-risk the WKWebView `<video>` render path at desktop level (ow-94b.5): the
-  spike validated AppKit + CoreAnimation, not the actual video path.
 - Verifying the wallpaper renders and spans correctly (Phase 5 of later tasks).
 
+### Also de-risked
+- ow-94b.5 (done): a looping `<video>` in a transparent WKWebView at the desktop
+  layer keeps presenting frames continuously on Tahoe whenever its Space is visible
+  (WebKit does not throttle the hidden/occluded page; it pauses only when fully
+  hidden and resumes live). Spike code is `WebSpikeWindow.swift` + `web/webspike/`
+  (gated by `OW_WEBSPIKE=1`). Findings:
+  `systems/web-render/webview-video-spike-findings.md`. Open follow-up: multi-display
+  slice sync across pause/resume (ow-blz.5).
+
 ### Next Step
-ow-mbw.3 (the real desktop-layer WallpaperWindow, seeding from the spike findings),
-and ow-94b.5 (de-risk WKWebView video at desktop level) before the web render layer
-relies on it.
+ow-mbw.3 (the real desktop-layer WallpaperWindow, seeding from the spike findings).
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

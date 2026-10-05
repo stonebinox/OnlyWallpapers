@@ -15,6 +15,7 @@ DerivedData/
 Sources/OnlyWallpapers/web/assets/*.mp4
 Sources/OnlyWallpapers/web/assets/*.mov
 Sources/OnlyWallpapers/web/assets/*.webm
+Sources/OnlyWallpapers/web/webspike/*.mp4
 
 # Scratch output from Codex/Grok/Sonnet runs
 /tmp/ow-*.md

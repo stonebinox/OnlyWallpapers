@@ -31,7 +31,23 @@ on the `canplay` event) or macoS will not start it unprompted.
 
 ## Transparency
 The shell sets the WKWebView to not draw its background; the page keeps a solid
-fallback color only until the video loads.
+fallback color only until the video loads. Use public API for this
+(`underPageBackgroundColor = .clear` plus transparent CSS), not the private
+`setValue(false, forKey: "drawsBackground")` KVC. See
+`webview-video-spike-findings.md`.
+
+## Video Liveness at the Desktop Layer (validated: ow-94b.5)
+A looping `<video>` in a WKWebView at the desktop window level keeps presenting new
+frames continuously on Tahoe whenever its Space is visible: WebKit does NOT throttle
+playback for an occluded/hidden desktop-level page (RVFC frames keep advancing with
+`document.visibilityState=hidden`). A fully hidden wallpaper (app in its own
+full-screen Space, or fully covered) pauses via macOS occlusion culling and resumes
+live on reveal, which is fine. Load the page via `loadFileURL` with an ABSOLUTE
+directory URL (a relative path silently fails), use
+`mediaTypesRequiringUserActionForPlayback = []` with `muted` + `playsinline` for
+autoplay, and keep a CSS `filter` on the video (that recomposite path is what
+production ships). Multi-display slice sync across pause/resume is still open:
+ow-blz.5.
 
 ## Live Editing
 Point `WALLPAPER_WEB_DIR` at this folder and edits show on next launch (or on

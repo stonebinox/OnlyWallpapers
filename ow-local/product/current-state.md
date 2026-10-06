@@ -32,9 +32,16 @@ Last updated: 2026-10-05
   (`zorder_ok=true`) by smoke. The ow-mbw.1 spike was removed. ow-94b.1 swaps the
   placeholder for `WebWallpaperView`.
 
+- ow-94b.1 (done): WebWallpaperView, a `WKWebView` subclass used as the
+  WallpaperWindow content view, loads a local page via `loadFileURL` and fills the
+  window (verified behind icons on both displays). The default run now shows a
+  black-fallback stub page; ow-94b.2 adds the real looping-video page. Finding: the
+  public WKWebView transparency path is opaque on macOS 26, so the base is opaque with
+  a black fallback (the full-bleed video covers it); true transparency deferred to
+  ow-aqx.4. The env-gated webspike is kept as the A/B until ow-94b.2 retires it.
+
 ### Not Done
-- Remaining Swift sources: `WallpaperController` (ow-blz.1), `WebWallpaperView`
-  (ow-94b.1).
+- Remaining Swift sources: `WallpaperController` (ow-blz.1).
 - Web layer files (`index.html`, `style.css`, `wallpaper.js`).
 - A sample `bg.mp4` in `web/assets/`.
 - Verifying the wallpaper renders and spans correctly (Phase 5 of later tasks).
@@ -49,10 +56,11 @@ Last updated: 2026-10-05
   slice sync across pause/resume (ow-blz.5).
 
 ### Next Step
-ow-94b.1 (WebWallpaperView: the transparent WKWebView content that replaces the
-WallpaperWindow placeholder) and ow-blz.1 (WallpaperController: union canvas and
-per-screen slice geometry, taking over per-screen window creation and display
-hot-plug). ow-mbw.4 adds the fuller window-config run check.
+ow-94b.2 (the real looping-video web page that replaces the stub, and retires the
+webspike A/B) and ow-blz.1 (WallpaperController: union canvas and per-screen slice
+geometry, taking over per-screen window creation and display hot-plug). ow-mbw.4
+adds the fuller window-config run check; ow-94b.3 adds WALLPAPER_WEB_DIR +
+Bundle.module web-dir resolution.
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

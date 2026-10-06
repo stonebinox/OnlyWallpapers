@@ -81,11 +81,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else {
             // Default production path: one WallpaperWindow per screen.
+            let webDir = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .appendingPathComponent("web", isDirectory: true)
+                .standardizedFileURL
             let screens = NSScreen.screens
             FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WINDOWS count=\(screens.count)\n".utf8))
             for screen in screens {
-                let placeholder = PlaceholderWallpaperView(frame: screen.frame)
-                let win = WallpaperWindow(screen: screen, contentView: placeholder)
+                let webView = WebWallpaperView(
+                    frame: NSRect(origin: .zero, size: screen.frame.size),
+                    webDirectory: webDir,
+                    screenName: screen.localizedName
+                )
+                let win = WallpaperWindow(screen: screen, contentView: webView)
                 wallpaperWindows.append(win)
                 win.orderFrontRegardless()
                 let name = screen.localizedName

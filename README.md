@@ -13,7 +13,8 @@ rendering.
 ## For Humans
 - Build: `swift build`
 - Run: `swift run OnlyWallpapers`
-- Hot-edit the look without rebuilding Swift:
+- Hot-edit the look without rebuilding Swift (planned, ow-94b.3; not wired yet, the
+  default run currently loads `Sources/OnlyWallpapers/web` from a `#filePath` dev path):
   ```bash
   WALLPAPER_WEB_DIR=$PWD/Sources/OnlyWallpapers/web swift run OnlyWallpapers
   ```

@@ -9,10 +9,10 @@ echo "=== OnlyWallpapers smoke-run ==="
 # --- Step 8: scope guard (run before build to catch forbidden symbols early) ---
 echo "[scope] Checking Sources tree for forbidden identifiers..."
 
-# WKWebView and WKWebViewConfiguration are forbidden outside WebSpikeWindow.swift.
+# WKWebView and WKWebViewConfiguration are allowed only in WebSpikeWindow.swift and WebWallpaperView.swift.
 HITS_WK="$(grep -rnE 'WKWebView|WKWebViewConfiguration' Sources/ --include='*.swift' \
-    --exclude='WebSpikeWindow.swift' || true)"
-if [ -n "$HITS_WK" ]; then echo "FAIL: WKWebView/WKWebViewConfiguration found outside WebSpikeWindow.swift"; echo "$HITS_WK"; exit 1; fi
+    --exclude='WebSpikeWindow.swift' --exclude='WebWallpaperView.swift' || true)"
+if [ -n "$HITS_WK" ]; then echo "FAIL: WKWebView/WKWebViewConfiguration found outside WebSpikeWindow.swift or WebWallpaperView.swift"; echo "$HITS_WK"; exit 1; fi
 
 # didChangeScreenParametersNotification and Info.plist are forbidden in ALL Swift files.
 HITS_FORBIDDEN="$(grep -rnE 'didChangeScreenParametersNotification|Info\.plist' Sources/ --include='*.swift' || true)"
@@ -206,6 +206,108 @@ else
     fi
 
     echo "[windows] PASS: $SCREEN_COUNT window(s) at level=$EXPECTED_LEVEL with zorder_ok=true mouse=true cb_allspaces=true cb_stationary=true cb_ignorescycle=true, all on distinct win= numbers"
+fi
+
+# --- Step 7b: verify WKWebView web-load (poll up to 8s for WebKit cold-spawn) ---
+echo "[webload] Checking ONLYWALLPAPERS_WEB loaded=ok lines (up to 8s)..."
+if [ "$SCREEN_COUNT" -eq 0 ]; then
+    echo "[webload] PASS: count=0, no web-load assertions needed"
+else
+    # (a) Require index_exists=true line to appear; hard-fail if missing or index_exists=false found.
+    WEB_DIR_OK=0
+    for i in $(seq 1 80); do
+        if grep -q 'ONLYWALLPAPERS_WEB dir=.*index_exists=true' "$TMPOUT" 2>/dev/null; then
+            WEB_DIR_OK=1
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$WEB_DIR_OK" -ne 1 ]; then
+        echo "FAIL: ONLYWALLPAPERS_WEB dir=... index_exists=true line never appeared (wrong web dir or missing index.html)"
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+    if grep -q 'ONLYWALLPAPERS_WEB dir=.*index_exists=false' "$TMPOUT" 2>/dev/null; then
+        echo "FAIL: ONLYWALLPAPERS_WEB index_exists=false found (index.html missing at resolved web dir)"
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+    echo "[webload] PASS: index_exists=true confirmed"
+
+    WEB_OK=0
+    for i in $(seq 1 80); do
+        WEB_OK_COUNT="$(grep -c 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT" 2>/dev/null || true)"
+        if [ "$WEB_OK_COUNT" -ge "$SCREEN_COUNT" ]; then
+            WEB_OK=1
+            break
+        fi
+        sleep 0.1
+    done
+
+    if [ "$WEB_OK" -ne 1 ]; then
+        echo "FAIL: expected $SCREEN_COUNT ONLYWALLPAPERS_WEB loaded=ok line(s), got fewer within 8s"
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+
+    # Verify no loaded=fail lines.
+    FAIL_COUNT="$(grep -c 'ONLYWALLPAPERS_WEB.*loaded=fail' "$TMPOUT" 2>/dev/null || true)"
+    if [ "$FAIL_COUNT" -ne 0 ]; then
+        echo "FAIL: $FAIL_COUNT ONLYWALLPAPERS_WEB loaded=fail line(s) found"
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+
+    # Verify N distinct win= values in loaded=ok lines (poll a bit more to let stragglers arrive).
+    # win= is always unique per window; screen= names can collide on identical monitors.
+    DISTINCT_OK=0
+    for i in $(seq 1 20); do
+        DISTINCT_WINS_WEB="$(grep 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT" \
+            | grep -o 'win=[0-9]*' \
+            | sort -u \
+            | wc -l \
+            | tr -d ' ')"
+        if [ "$DISTINCT_WINS_WEB" -ge "$SCREEN_COUNT" ]; then
+            DISTINCT_OK=1
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$DISTINCT_OK" -ne 1 ]; then
+        echo "FAIL: expected $SCREEN_COUNT distinct win= value(s) in loaded=ok lines, found $DISTINCT_WINS_WEB"
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+
+    # (b) Parse frame=WxH from every loaded=ok line; require W > 100 and H > 100.
+    FRAME_BAD=0
+    while IFS= read -r okline; do
+        WIN_ID="$(echo "$okline" | grep -o 'win=[0-9]*' | head -1)"
+        FRAME="$(echo "$okline" | grep -o 'frame=[0-9]*x[0-9]*' | head -1)"
+        if [ -z "$FRAME" ]; then
+            echo "FAIL: loaded=ok line for $WIN_ID is missing frame= field: $okline"
+            FRAME_BAD=1
+            continue
+        fi
+        W="$(echo "$FRAME" | sed 's/frame=\([0-9]*\)x.*/\1/')"
+        H="$(echo "$FRAME" | sed 's/frame=[0-9]*x\([0-9]*\)/\1/')"
+        if [ "$W" -le 100 ] || [ "$H" -le 100 ]; then
+            echo "FAIL: loaded=ok frame too small for $WIN_ID (${W}x${H}, need >100x100): $okline"
+            FRAME_BAD=1
+        fi
+    done < <(grep 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT")
+    if [ "$FRAME_BAD" -ne 0 ]; then
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+
+    echo "[webload] PASS: $SCREEN_COUNT loaded=ok line(s) with distinct win= values, no loaded=fail, all frames >100x100"
 fi
 
 # --- Step 7c: verify SIGINT causes clean exit within ~1s ---

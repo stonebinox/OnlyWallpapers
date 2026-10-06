@@ -1,6 +1,6 @@
-// SPIKE: This file is a diagnostic spike for WKWebView desktop-layer rendering.
-// It is the ONLY file allowed to reference WKWebView or WKWebViewConfiguration.
-// Remove or gate behind a compile flag before shipping.
+// SPIKE: Env-gated A/B spike for WKWebView desktop-layer rendering (OW_SPIKE / OW_WEBSPIKE).
+// WebWallpaperView.swift is now the production WKWebView file.
+// This spike is retained until ow-94b.2 retires it; kept out of production by env guard.
 
 import AppKit
 import WebKit

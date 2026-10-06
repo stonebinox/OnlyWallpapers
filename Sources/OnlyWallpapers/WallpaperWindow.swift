@@ -1,31 +1,6 @@
 import AppKit
 import CoreGraphics
 
-// MARK: - PlaceholderWallpaperView
-
-// TEMPORARY: replaced by WebWallpaperView in ow-94b.1.
-final class PlaceholderWallpaperView: NSView {
-
-    override var isOpaque: Bool { true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        // Deep teal fill: visually distinct from the magenta used in the ow-mbw.1 spike.
-        NSColor(calibratedRed: 0.0, green: 0.38, blue: 0.45, alpha: 1.0).setFill()
-        bounds.fill()
-
-        let text = "OnlyWallpapers placeholder (ow-94b.1 adds the web layer)"
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 48, weight: .bold),
-            .foregroundColor: NSColor.white
-        ]
-        let attrStr = NSAttributedString(string: text, attributes: attrs)
-        let textSize = attrStr.size()
-        let x = (bounds.width - textSize.width) / 2
-        let y = (bounds.height - textSize.height) / 2
-        attrStr.draw(at: NSPoint(x: x, y: y))
-    }
-}
-
 // MARK: - WallpaperWindow
 
 final class WallpaperWindow: NSWindow {

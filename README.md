@@ -13,12 +13,13 @@ rendering.
 ## For Humans
 - Build: `swift build`
 - Run: `swift run OnlyWallpapers`
-- Hot-edit the look without rebuilding Swift (planned, ow-94b.3; not wired yet, the
-  default run currently loads `Sources/OnlyWallpapers/web` from a `#filePath` dev path):
+- Live-edit the web layer without rebuilding Swift (edits take effect on next launch, no file watcher):
   ```bash
   WALLPAPER_WEB_DIR=$PWD/Sources/OnlyWallpapers/web swift run OnlyWallpapers
   ```
-- Drop your clip at `Sources/OnlyWallpapers/web/assets/bg.mp4`.
+- Production runs with the variable unset. The bundled web layer (copied at build time via `resources: [.copy("web")]`) is used automatically.
+- Drop your clip at `Sources/OnlyWallpapers/web/assets/bg.mp4` and rebuild.
+- Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/video-check.sh` (video asset check).
 
 ## For AI Agents
 Read, in order:

@@ -24,11 +24,6 @@ final class WallpaperController {
 
     private var records: [WallpaperScreenRecord] = []
 
-    private let webDir: URL = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .appendingPathComponent("web", isDirectory: true)
-        .standardizedFileURL
-
     nonisolated func computeLayout(_ frames: [CGRect]) -> (union: CGRect, slices: [WallpaperSliceGeometry]) {
         if frames.isEmpty { return (.zero, []) }
         let union = frames.reduce(CGRect.null) { $0.union($1) }
@@ -43,6 +38,7 @@ final class WallpaperController {
 
     func build() {
         guard records.isEmpty else { return }
+        let webDir = WebDirectoryResolver.resolve()
         let screens = NSScreen.screens
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WINDOWS count=\(screens.count)\n".utf8))
         let (_, slices) = computeLayout(screens.map { $0.frame })

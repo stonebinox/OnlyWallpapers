@@ -23,8 +23,8 @@ slice geometry. The per-screen slice geometry is now injected into the web layer
   `offY = union.maxY - screen.maxY`, points, union seeded from `CGRect.null`), creates
   and owns one `WallpaperWindow` per screen (each window stays at `screen.frame`; the
   slice `offX/offY` are data only, never applied to any AppKit rect), passes the web
-  dir (`#filePath` dev path for now; `WALLPAPER_WEB_DIR` + `Bundle.module` are
-  ow-94b.3), and logs the geometry. Records are stored by `CGDirectDisplayID` (not
+  dir resolved by `WebDirectoryResolver` (ow-94b.3: `WALLPAPER_WEB_DIR` env override,
+  else the `Bundle.module` bundled copy), and logs the geometry. Records are stored by `CGDirectDisplayID` (not
   `NSScreen`). Injecting the geometry into the web layer (via a document-start WKUserScript) is done (ow-blz.2); the display hot-plug rebuild is ow-blz.3 (a flicker-safe swap, not a destructive teardown).
 - **WallpaperWindow** (ow-mbw.3, done): a `final NSWindow` subclass, borderless at
   the desktop level, content-agnostic (holds whatever content view it is given),
@@ -66,12 +66,22 @@ encodes the Displays arrangement. For each screen:
 Pass `{stageW, stageH, offX, offY: offYTop}` to the web layer. Geometry is in
 points, which map 1:1 to CSS px, so Retina is handled by the backing scale.
 
-## Web Asset Resolution
-Intended (ow-94b.3): `WALLPAPER_WEB_DIR` env var wins (live editing without a
-rebuild), otherwise load the copy bundled into the build via `Bundle.module`. Loading
-uses `loadFileURL(_:allowingReadAccessTo:)` scoped to the web directory (already in
-place since ow-94b.1). For now, ow-94b.1 resolves the web dir from a `#filePath` dev
-path only; `WALLPAPER_WEB_DIR` and `Bundle.module` are not wired yet (ow-94b.3).
+## Web Asset Resolution (ow-94b.3, done)
+`WebDirectoryResolver.resolve()` (runs on the MainActor; `computeLayout` stays
+nonisolated) picks the web dir: `WALLPAPER_WEB_DIR` wins if set (live editing without
+a rebuild; the value is tilde-expanded and must be absolute and contain `index.html`),
+otherwise the copy bundled into the build via `Bundle.module` (`Package.swift` ships
+`web/` as `resources: [.copy("web")]`). It logs a dedicated line
+`ONLYWALLPAPERS_WEB_RESOLVE status=ok source=env|bundle dir=<abs>`. A set-but-invalid
+override does NOT fall back: it logs `status=fail ... reason=not-absolute|no-index`
+and `exit(1)` before any window is created (silent fallback would hide a typo).
+Loading still uses `loadFileURL(_:allowingReadAccessTo:)` scoped to the web directory
+(since ow-94b.1). A wholly-missing resource bundle aborts inside the synthesized
+`Bundle.module` accessor; ensuring the bundle ships beside the binary is ow-aad.5's
+job. NOTE: the env-gated webspike path in `AppDelegate` reads `WALLPAPER_WEB_DIR`
+under its OWN older contract (it also requires `bg.mp4`, and silently falls back to
+`.build/webspike`); the fail-fast resolution above applies only to the default,
+non-webspike path.
 
 ## Open Questions
 - Does a desktop-level window need any extra handling under Stage Manager?

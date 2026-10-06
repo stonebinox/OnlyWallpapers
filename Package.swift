@@ -7,7 +7,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "OnlyWallpapers",
-            exclude: ["web"],
+            resources: [.copy("web")],
             swiftSettings: [.defaultIsolation(MainActor.self)]
         )
     ]

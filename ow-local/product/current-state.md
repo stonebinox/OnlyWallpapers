@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-10-05
+Last updated: 2026-10-06
 
 ## Status: desktop-layer + WKWebView video both de-risked on Tahoe (ow-mbw.2, ow-mbw.1, ow-94b.5 done)
 
@@ -52,7 +52,6 @@ Last updated: 2026-10-05
 
 ### Not Done
 - A real sample `bg.mp4` in `web/assets/` (ow-94b.4; a generated test clip is used now).
-- Asset-dir resolution: WALLPAPER_WEB_DIR + Bundle.module (ow-94b.3).
 - Rebuild on display hot-plug (ow-blz.3); geometry unit tests (ow-blz.4); slice sync
   across pause/resume (ow-blz.5); retiring the webspike (deferred).
 
@@ -77,13 +76,25 @@ Last updated: 2026-10-05
   the native applied read-back (`getBoundingClientRect` on `#stage`) shows `left ==
   -offX` per screen (e.g. the right display at `left=-3840` on a 7680 union). Temporal
   frame sync across displays is still open (ow-blz.5).
+- ow-94b.3 (done): web asset resolution. `WebDirectoryResolver.resolve()` (MainActor)
+  picks the web dir: `WALLPAPER_WEB_DIR` env override (tilde-expanded, must be absolute
+  and hold `index.html`) else the copy bundled via `Bundle.module` (`Package.swift`
+  ships `web/` as `resources: [.copy("web")]`). Logs
+  `ONLYWALLPAPERS_WEB_RESOLVE status=ok|fail source=env|bundle ...`; a set-but-invalid
+  override `exit(1)`s rather than silently falling back. `#filePath` is gone. Gates:
+  `smoke-run.sh` asserts the default run resolves `source=bundle`; `webdir-check.sh`
+  (requires a display) asserts, with exact-token and per-screen load checks,
+  bundle-consumed and override-ok (every `WebWallpaperView` loaded the resolved dir,
+  one `loaded=ok` per screen, no `loaded=fail`), plus override-fail and
+  relative-override (fail-fast, nonzero exit, no window created), and bundle hygiene.
+  Unblocks packaging (ow-aad.5).
 
 ### Next Step
-ow-blz.3 (rebuild the windows on display hot-plug, a flicker-safe swap) and ow-blz.4
-(geometry unit tests, the Y-flip cases the aligned hardware cannot exercise). ow-94b.3
-adds WALLPAPER_WEB_DIR + Bundle.module; ow-94b.4 sources a real sample video; ow-mbw.4
-adds the fuller window-config run check; ow-blz.5 handles slice sync. Retiring the
-env-gated webspike A/B is a deferred cleanup.
+ow-aad.5 packages a standalone `.app` (now unblocked by ow-94b.3). ow-blz.3 (rebuild
+the windows on display hot-plug, a flicker-safe swap) and ow-blz.4 (geometry unit
+tests, the Y-flip cases the aligned hardware cannot exercise). ow-94b.4 sources a real
+sample video; ow-mbw.4 adds the fuller window-config run check; ow-blz.5 handles slice
+sync. Retiring the env-gated webspike A/B is a deferred cleanup.
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

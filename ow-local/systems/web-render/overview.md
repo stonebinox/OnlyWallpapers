@@ -9,9 +9,9 @@ subclass used as the WallpaperWindow content view, loading the local page via
 `loadFileURL`. The real looping-video page (ow-94b.2) is now in place: a looping
 muted video fills the window and starts on its own, with a black fallback. The slice
 positioning (ow-blz.2) is in place: the one video is sliced across all displays via
-injected per-screen geometry and `left/top` positioning of `#stage`. Still planned:
-the asset-dir resolution (ow-94b.3, WALLPAPER_WEB_DIR + Bundle.module) and mood logic
-(Epic D).
+injected per-screen geometry and `left/top` positioning of `#stage`. The asset-dir
+resolution (ow-94b.3) is wired: `WALLPAPER_WEB_DIR` override else the `Bundle.module`
+bundled copy. Still planned: mood logic (Epic D).
 
 ## Files
 - **index.html**: a `#stage` containing the `<video id="bg">` (muted, playsinline,
@@ -75,11 +75,13 @@ autoplay, and keep a CSS `filter` on the video (that recomposite path is what
 production ships). Multi-display slice sync across pause/resume is still open:
 ow-blz.5.
 
-## Live Editing (planned, ow-94b.3)
-The intent: point `WALLPAPER_WEB_DIR` at this folder and edits show on next launch
-without rebuilding the Swift package. Not wired yet: ow-94b.1 loads the web dir from
-a `#filePath` dev path, and ow-94b.3 adds the `WALLPAPER_WEB_DIR` override plus
-`Bundle.module` resources.
+## Live Editing (ow-94b.3, done)
+Point `WALLPAPER_WEB_DIR` at a web folder (absolute path) and edits show on the next
+launch without rebuilding the Swift package (there is no file watcher). With the var
+unset, the app loads the copy bundled into the build via `Bundle.module`
+(`Package.swift` ships `web/` as `resources: [.copy("web")]`). A set-but-invalid
+override fails fast (`exit(1)`) rather than silently falling back. See
+swift-shell/overview.md for the resolver contract and log grammar.
 
 ## Assets
 `assets/bg.mp4` is the base clip. Large media is gitignored; keep a small sample

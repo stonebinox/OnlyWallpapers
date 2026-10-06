@@ -64,7 +64,7 @@ echo "[build] Binary: $BIN"
 # Step 4: launch
 TMPOUT="$(mktemp)"
 echo "[launch] Starting $BIN..."
-env -u OW_SPIKE -u OW_WEBSPIKE "$BIN" >"$TMPOUT" 2>&1 &
+env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[launch] PID=$PID"
 

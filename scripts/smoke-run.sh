@@ -104,7 +104,7 @@ trap cleanup EXIT
 
 # --- Step 3: launch binary in background ---
 echo "[launch] Starting $BIN..."
-env -u OW_SPIKE -u OW_WEBSPIKE "$BIN" >"$TMPOUT" 2>&1 &
+env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[launch] PID: $PID"
 
@@ -156,6 +156,23 @@ if ! kill -0 "$PID" 2>/dev/null; then
     exit 1
 fi
 echo "[alive] PASS: process still alive after 2s"
+
+# --- Step 6b: verify web dir resolved from bundle (no env override) ---
+echo "[resolve] Checking ONLYWALLPAPERS_WEB_RESOLVE status=ok source=bundle..."
+RESOLVE_LINE="$(grep 'ONLYWALLPAPERS_WEB_RESOLVE' "$TMPOUT" | head -1 || true)"
+if [ -z "$RESOLVE_LINE" ]; then
+    echo "FAIL: ONLYWALLPAPERS_WEB_RESOLVE line never appeared"
+    echo "--- output ---"
+    cat "$TMPOUT" || true
+    exit 1
+fi
+if ! echo "$RESOLVE_LINE" | grep -Eq 'status=ok source=bundle( |$)'; then
+    echo "FAIL: expected status=ok source=bundle, got: $RESOLVE_LINE"
+    echo "--- output ---"
+    cat "$TMPOUT" || true
+    exit 1
+fi
+echo "[resolve] PASS: $RESOLVE_LINE"
 
 # --- Step 7a: verify WallpaperWindow placement (default run only) ---
 echo "[windows] Checking ONLYWALLPAPERS_WINDOWS count line..."

@@ -5,21 +5,25 @@ local page into a transparent WKWebView per screen. All visual control lives her
 and can be edited without recompiling Swift.
 
 Status: partially implemented. `WebWallpaperView` (ow-94b.1) is a `WKWebView`
-subclass used as the WallpaperWindow content view, loading a local page via
-`loadFileURL`; the default run currently loads a black-fallback stub. The real
-looping-video page (index.html/style.css/wallpaper.js), the slice transform, and the
-asset resolution below are still planned (ow-94b.2, ow-blz.1, ow-94b.3).
+subclass used as the WallpaperWindow content view, loading the local page via
+`loadFileURL`. The real looping-video page (ow-94b.2) is now in place: a looping
+muted video fills the window and starts on its own, with a black fallback. Still
+planned: the slice transform (ow-blz.2, so each screen shows its slice of a spanned
+canvas) and the asset-dir resolution (ow-94b.3, WALLPAPER_WEB_DIR + Bundle.module).
 
 ## Files
-- **index.html**: a `#stage` containing the `<video id="bg">` and an overlay
-  `<canvas>` for future effects.
-- **style.css**: full-bleed video with `object-fit: cover`; the `filter` property
-  on the video is the live-control knob (saturate, brightness, hue-rotate, blur).
-- **wallpaper.js**: reads the injected geometry, sizes and positions the stage,
-  kicks off autoplay, and runs any live logic (for example a time-of-day mood).
+- **index.html**: a `#stage` containing the `<video id="bg">` (muted, playsinline,
+  loop, autoplay) and an overlay `<canvas>` reserved for future effects (inert).
+- **style.css**: full-bleed video with `object-fit: cover`; a `filter` on the video
+  (currently `brightness(1.01)`, the validated recomposite path) is the live-control
+  knob for the look (saturate, brightness, hue-rotate, blur). Black fallback until
+  the video decodes (the WKWebView base is opaque on macOS 26, see Transparency).
+- **wallpaper.js**: kicks off autoplay (synchronous `play()` plus retries on
+  `canplay` / `loadeddata`, and an `ended` belt). It does NOT yet read slice geometry
+  or run mood logic: those are ow-blz.2 and Epic D.
 
-## The Slice Transform
-The shell injects, at document start:
+## The Slice Transform (planned, ow-blz.2)
+The shell will inject, at document start:
 ```js
 window.__wallpaper = { stageW, stageH, offX, offY }
 ```

@@ -32,6 +32,24 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WEB screen=\(screenName) win=\(self.window?.windowNumber ?? 0) loaded=ok frame=\(Int(self.bounds.width))x\(Int(self.bounds.height))\n".utf8))
+        for delay in [1.0, 2.5, 7.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                let sn = self.screenName
+                let wn = self.window?.windowNumber ?? 0
+                self.requestMediaPlaybackState { state in
+                    let ms: String
+                    switch state {
+                    case .none: ms = "none"
+                    case .paused: ms = "paused"
+                    case .suspended: ms = "suspended"
+                    case .playing: ms = "playing"
+                    @unknown default: ms = "unknown"
+                    }
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WEB screen=\(sn) win=\(wn) media=\(ms) t=\(delay)\n".utf8))
+                }
+            }
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

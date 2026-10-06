@@ -32,6 +32,37 @@ if [ "$SAP_COUNT" != "1" ]; then echo "FAIL: expected exactly one setActivationP
 if ! grep -rq 'setActivationPolicy(.accessory)' Sources/ --include='*.swift'; then echo "FAIL: the single setActivationPolicy call is not .accessory"; exit 1; fi
 echo "[scope] PASS: setActivationPolicy(.accessory) called exactly once"
 
+# --- Step 8c: web file shape guards (shape-only; not a playback gate; TCC-free) ---
+echo "[shape] Checking web file structure..."
+WEB_DIR="$REPO_ROOT/Sources/OnlyWallpapers/web"
+SHAPE_FAIL=0
+
+check_contains() {
+    local file="$1" pattern="$2" label="$3"
+    if ! grep -q "$pattern" "$file" 2>/dev/null; then
+        echo "FAIL [shape]: $label not found in $file"
+        SHAPE_FAIL=1
+    fi
+}
+
+check_contains "$WEB_DIR/index.html" 'id="bg"'           'id="bg"'
+check_contains "$WEB_DIR/index.html" 'muted'              'muted attribute'
+check_contains "$WEB_DIR/index.html" 'loop'               'loop attribute'
+check_contains "$WEB_DIR/index.html" 'playsinline'        'playsinline attribute'
+check_contains "$WEB_DIR/index.html" 'src="assets/bg\.mp4"' 'src="assets/bg.mp4"'
+check_contains "$WEB_DIR/index.html" '<canvas'            '<canvas element'
+check_contains "$WEB_DIR/index.html" 'wallpaper\.js'      'wallpaper.js reference'
+check_contains "$WEB_DIR/index.html" 'style\.css'         'style.css reference'
+check_contains "$WEB_DIR/style.css"  'object-fit'         'object-fit in style.css'
+check_contains "$WEB_DIR/style.css"  'filter'             'filter in style.css'
+check_contains "$WEB_DIR/style.css"  '#bg'                '#bg in style.css'
+check_contains "$WEB_DIR/wallpaper.js" 'video\.play'      'video.play in wallpaper.js'
+
+if [[ $SHAPE_FAIL -ne 0 ]]; then
+    exit 1
+fi
+echo "[shape] PASS: all web file shape guards satisfied"
+
 # --- Step 9: package structure check ---
 echo "[pkg] Checking swift package describe..."
 PKG_DESC="$(swift package describe 2>&1)"

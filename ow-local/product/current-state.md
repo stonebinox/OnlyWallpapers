@@ -38,13 +38,23 @@ Last updated: 2026-10-05
   black-fallback stub page; ow-94b.2 adds the real looping-video page. Finding: the
   public WKWebView transparency path is opaque on macOS 26, so the base is opaque with
   a black fallback (the full-bleed video covers it); true transparency deferred to
-  ow-aqx.4. The env-gated webspike is kept as the A/B until ow-94b.2 retires it.
+  ow-aqx.4. The env-gated webspike is kept as the A/B (retirement deferred).
+- ow-94b.2 (done): the real looping-video web page (index.html + style.css +
+  wallpaper.js) replaces the stub. A looping muted video fills the window
+  (object-fit: cover), starts on its own (autoplay + synchronous play() kick), with a
+  black fallback and the validated brightness(1.01) filter. An overlay canvas is in
+  the DOM but inert (Epic D). WebWallpaperView logs a native WKMediaPlaybackState
+  sample at +1.0/+2.5/+7.5s; verified media=playing early (autostart) AND at the late
+  +7.5s sample past the clip (looping) on both displays. Verification:
+  scripts/generate-test-bg.sh (gitignored test clip) + scripts/video-check.sh (native
+  media gates are authoritative; screencapture -l pixels are non-gating corroboration
+  because -l is flaky under occlusion culling).
 
 ### Not Done
 - Remaining Swift sources: `WallpaperController` (ow-blz.1).
-- Web layer files (`index.html`, `style.css`, `wallpaper.js`).
-- A sample `bg.mp4` in `web/assets/`.
-- Verifying the wallpaper renders and spans correctly (Phase 5 of later tasks).
+- A real sample `bg.mp4` in `web/assets/` (ow-94b.4; a generated test clip is used now).
+- Asset-dir resolution: WALLPAPER_WEB_DIR + Bundle.module (ow-94b.3).
+- The spanned-canvas slice transform (ow-blz.2); retiring the webspike (deferred).
 
 ### Also de-risked
 - ow-94b.5 (done): a looping `<video>` in a transparent WKWebView at the desktop
@@ -56,11 +66,12 @@ Last updated: 2026-10-05
   slice sync across pause/resume (ow-blz.5).
 
 ### Next Step
-ow-94b.2 (the real looping-video web page that replaces the stub, and retires the
-webspike A/B) and ow-blz.1 (WallpaperController: union canvas and per-screen slice
-geometry, taking over per-screen window creation and display hot-plug). ow-mbw.4
-adds the fuller window-config run check; ow-94b.3 adds WALLPAPER_WEB_DIR +
-Bundle.module web-dir resolution.
+ow-blz.1 (WallpaperController: union canvas and per-screen slice geometry, taking
+over per-screen window creation and display hot-plug) and ow-blz.2 (inject the slice
+transform into the web layer so the one video spans all displays). ow-94b.3 adds
+WALLPAPER_WEB_DIR + Bundle.module web-dir resolution; ow-94b.4 sources a real sample
+video; ow-mbw.4 adds the fuller window-config run check. Retiring the env-gated
+webspike A/B is a deferred cleanup (not yet done).
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

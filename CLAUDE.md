@@ -110,7 +110,10 @@ pass `-c 'mcp_servers={}'` to `codex exec`: the user's `~/.codex/config.toml` re
 remote MCP servers (Linear via `mcp-remote`, openaiDeveloperDocs) that Codex connects to
 at startup; those network/OAuth connections can hang the run (also surfacing as exit
 144). We do not need MCP for scoping/review, so disable them. (`--ignore-user-config`
-also works but drops all user config.)
+also works but drops all user config.) Also keep co-scope prompts LEAN AND BOUNDED:
+name the specific files Codex should read, forbid whole-repo grep, and cap the length.
+Open-ended "analyze everything" co-scopes run so long they also die at 144; focused
+prompts (and the git-diff reviews) complete reliably.
 
 ---
 

@@ -19,7 +19,7 @@ rendering.
   ```
 - Production runs with the variable unset. On launch the app seeds a writable copy of the web layer into `~/Library/Application Support/OnlyWallpapers/web/` from the bundle (code files re-seeded when the bundle changes; your chosen video preserved), and loads from there. If app storage is unwritable it falls back to the bundled copy.
 - Set your video from the menu-bar icon ("Choose video...", see below). For dev, drop a clip at `Sources/OnlyWallpapers/web/assets/bg.mp4` and use `WALLPAPER_WEB_DIR`.
-- Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/package-check.sh` (standalone .app), `scripts/rebuild-check.sh` (display hot-plug rebuild), `scripts/video-check.sh` (video asset check).
+- Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/package-check.sh` (standalone .app), `scripts/rebuild-check.sh` (display hot-plug rebuild), `scripts/video-check.sh` (video asset check), `scripts/framing-check.sh` (zoom/pan framing inject, nudge, clamp, zoom-liveness, hot-plug).
 
 ## Build and install the app
 

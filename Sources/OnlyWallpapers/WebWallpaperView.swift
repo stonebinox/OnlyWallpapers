@@ -18,8 +18,9 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
     private var latestGeometry: WallpaperSliceGeometry?
     private var latestGen: Int = 0
     private var isLoaded: Bool = false
+    private var latestFraming: AppStorageManager.FramingConfig?
 
-    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int) {
+    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig) {
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
         self.screenName = screenName
@@ -59,6 +60,22 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             }
         }
         self.injectionStatus = injectionStatus
+
+        // Framing injection: document-start, so applyFraming runs before first paint.
+        let framing = initialFraming
+        let fz = framing.zoom.isFinite ? min(max(framing.zoom, 1), 2) : 1.0
+        let fx = framing.panX.isFinite ? min(max(framing.panX, -1), 1) : 0.0
+        let fy = framing.panY.isFinite ? min(max(framing.panY, -1), 1) : 0.0
+        let framingPayload: [String: Double] = ["zoom": fz, "panX": fx, "panY": fy]
+        if let fdata = try? JSONSerialization.data(withJSONObject: framingPayload),
+           let fjson = String(data: fdata, encoding: .utf8) {
+            let fscript = WKUserScript(
+                source: "window.__wallpaperFraming = \(fjson);",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(fscript)
+        }
 
         super.init(frame: frame, configuration: config)
         // On macOS 26, the public transparency path (underPageBackgroundColor + transparent CSS)
@@ -114,6 +131,103 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         }
     }
 
+    func applyFraming(_ cfg: AppStorageManager.FramingConfig) {
+        latestFraming = cfg
+        guard isLoaded else { return }
+        applyFramingNow(cfg)
+    }
+
+    private func emitFramingReadback(maxAttempts: Int, delay: Double) {
+        let js = "(function(){ var fa = window.__framingApplied; var bg = document.getElementById('bg'); if (!fa || !bg) return JSON.stringify(null); var cs = window.getComputedStyle(bg); return JSON.stringify({zoom:fa.zoom,panX:fa.panX,panY:fa.panY,w:cs.width,h:cs.height,left:fa.left,top:fa.top,op:cs.objectPosition}); })()"
+        let win = self.window?.windowNumber ?? 0
+        self.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else { return }
+            guard let str = result as? String, str != "null",
+                  let data = str.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let zoom = (obj["zoom"] as? NSNumber)?.doubleValue,
+                  let panX = (obj["panX"] as? NSNumber)?.doubleValue,
+                  let panY = (obj["panY"] as? NSNumber)?.doubleValue,
+                  let usedW = obj["w"] as? String,
+                  let usedH = obj["h"] as? String,
+                  let objPos = obj["op"] as? String else {
+                if maxAttempts > 1 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        self?.emitFramingReadback(maxAttempts: maxAttempts - 1, delay: delay)
+                    }
+                }
+                return
+            }
+            let left = (obj["left"] as? NSNumber)?.doubleValue ?? 0.0
+            let top = (obj["top"] as? NSNumber)?.doubleValue ?? 0.0
+            let line = String(format: "ONLYWALLPAPERS_FRAMING win=%ld zoom=%.4f panX=%.4f panY=%.4f usedW=%@ usedH=%@ left=%.4f top=%.4f objPos=%@\n",
+                              win, zoom, panX, panY, usedW, usedH, left, top, objPos)
+            FileHandle.standardOutput.write(Data(line.utf8))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self else { return }
+                let capturedWin = self.window?.windowNumber ?? 0
+                self.requestMediaPlaybackState { state in
+                    let ms: String
+                    switch state {
+                    case .none: ms = "none"
+                    case .paused: ms = "paused"
+                    case .suspended: ms = "suspended"
+                    case .playing: ms = "playing"
+                    @unknown default: ms = "unknown"
+                    }
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_FRAMING_MEDIA win=\(capturedWin) media=\(ms)\n".utf8))
+                }
+            }
+        }
+    }
+
+    private func applyFramingNow(_ cfg: AppStorageManager.FramingConfig) {
+        let fz = cfg.zoom.isFinite ? min(max(cfg.zoom, 1), 2) : 1.0
+        let fx = cfg.panX.isFinite ? min(max(cfg.panX, -1), 1) : 0.0
+        let fy = cfg.panY.isFinite ? min(max(cfg.panY, -1), 1) : 0.0
+        let js = String(format: "window.__setWallpaperFraming({zoom:%.4f,panX:%.4f,panY:%.4f})", fz, fx, fy)
+        let win = self.window?.windowNumber ?? 0
+        self.evaluateJavaScript(js) { [weak self] _, _ in
+            guard let self else { return }
+            let readback = "(function(){ var fa=window.__framingApplied; var bg=document.getElementById('bg'); if(!fa||!bg) return JSON.stringify(null); var cs=window.getComputedStyle(bg); return JSON.stringify({zoom:fa.zoom,panX:fa.panX,panY:fa.panY,w:cs.width,h:cs.height,left:fa.left,top:fa.top,op:cs.objectPosition}); })()"
+            self.evaluateJavaScript(readback) { [weak self] result, _ in
+                guard let self else { return }
+                let wn = self.window?.windowNumber ?? win
+                let rb = result as? String ?? "null"
+                if let d = rb.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                   let actualZoom = (obj["zoom"] as? NSNumber)?.doubleValue,
+                   let actualPanX = (obj["panX"] as? NSNumber)?.doubleValue,
+                   let actualPanY = (obj["panY"] as? NSNumber)?.doubleValue,
+                   let usedW = obj["w"] as? String,
+                   let usedH = obj["h"] as? String,
+                   let objPos = obj["op"] as? String {
+                    let cssLeft = (obj["left"] as? NSNumber)?.doubleValue ?? 0.0
+                    let cssTop = (obj["top"] as? NSNumber)?.doubleValue ?? 0.0
+                    let line = String(format: "ONLYWALLPAPERS_FRAMING win=%ld zoom=%.4f panX=%.4f panY=%.4f usedW=%@ usedH=%@ left=%.4f top=%.4f objPos=%@\n",
+                                      wn, actualZoom, actualPanX, actualPanY, usedW, usedH, cssLeft, cssTop, objPos)
+                    FileHandle.standardOutput.write(Data(line.utf8))
+                    let capturedWin = self.window?.windowNumber ?? 0
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                        guard let self else { return }
+                        let capturedWin2 = self.window?.windowNumber ?? capturedWin
+                        self.requestMediaPlaybackState { state in
+                            let ms: String
+                            switch state {
+                            case .none: ms = "none"
+                            case .paused: ms = "paused"
+                            case .suspended: ms = "suspended"
+                            case .playing: ms = "playing"
+                            @unknown default: ms = "unknown"
+                            }
+                            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_FRAMING_MEDIA win=\(capturedWin2) media=\(ms)\n".utf8))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         isLoaded = true
         let win = self.window?.windowNumber ?? 0
@@ -157,6 +271,13 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
                     FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WEB applied win=\(win) applied=fail gen=\(self.commitGen)\n".utf8))
                 }
             }
+        }
+
+        // Re-apply pending framing (last-write-wins, mirrors geometry FIX-2 pattern).
+        if let f = latestFraming {
+            applyFramingNow(f)
+        } else {
+            emitFramingReadback(maxAttempts: 3, delay: 0.25)
         }
 
         for delay in [1.0, 2.5, 7.5] {

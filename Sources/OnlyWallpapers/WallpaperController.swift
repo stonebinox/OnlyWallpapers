@@ -211,7 +211,9 @@ final class WallpaperController {
         let gen = commitGen
         commitGen += 1
 
-        let webDir = isFakeMode ? nil : Optional(WebDirectoryResolver.resolve().url)
+        let envWebDir = ProcessInfo.processInfo.environment["WALLPAPER_WEB_DIR"]
+            .flatMap { p in p.isEmpty ? nil : URL(fileURLWithPath: p) }
+        let webDir: URL? = isFakeMode ? envWebDir : Optional(WebDirectoryResolver.resolve().url)
         let oldCount = records.count
         let newCount = descriptors.count
 
@@ -259,14 +261,15 @@ final class WallpaperController {
                     geometry: geo))
             } else {
                 // ADD newcomer
-                if !isFakeMode, let webDir = webDir {
+                if let webDir = webDir {
                     // FIX 5: pass commitGen so loaded=ok and applied lines carry the commit gen
                     let webView = WebWallpaperView(
                         frame: NSRect(origin: .zero, size: desc.frame.size),
                         webDirectory: webDir,
                         screenName: "Display-\(desc.displayID)",
                         geometry: geo,
-                        commitGen: gen)
+                        commitGen: gen,
+                        initialFraming: AppStorageManager.currentFraming)
                     let win = WallpaperWindow(frame: desc.frame, contentView: webView)
                     win.orderFrontRegardless()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
@@ -359,5 +362,47 @@ final class WallpaperController {
             }
         }
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_VIDEO reload views=\(viewCount) rev=\(token)\n".utf8))
+    }
+
+    func applyFramingToAll() {
+        let cfg = AppStorageManager.currentFraming
+        for rec in records {
+            rec.webView?.applyFraming(cfg)
+        }
+    }
+
+    private func updateFraming(_ cfg: AppStorageManager.FramingConfig) {
+        AppStorageManager.currentFraming = cfg
+        if !AppStorageManager.writeFraming(cfg) {
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_FRAMING persist=fail\n".utf8))
+        }
+        applyFramingToAll()
+    }
+
+    func zoomBy(_ delta: Double) {
+        let c = AppStorageManager.currentFraming
+        let newZoom = min(max(c.zoom + delta, 1), 2)
+        updateFraming(AppStorageManager.FramingConfig(zoom: newZoom, panX: c.panX, panY: c.panY))
+    }
+
+    func panXBy(_ delta: Double) {
+        let c = AppStorageManager.currentFraming
+        let newX = min(max(c.panX + delta, -1), 1)
+        updateFraming(AppStorageManager.FramingConfig(zoom: c.zoom, panX: newX, panY: c.panY))
+    }
+
+    func panYBy(_ delta: Double) {
+        let c = AppStorageManager.currentFraming
+        let newY = min(max(c.panY + delta, -1), 1)
+        updateFraming(AppStorageManager.FramingConfig(zoom: c.zoom, panX: c.panX, panY: newY))
+    }
+
+    func resetFraming() {
+        updateFraming(AppStorageManager.FramingConfig(zoom: 1, panX: 0, panY: 0))
+    }
+
+    func reloadFramingFromDisk() {
+        AppStorageManager.currentFraming = AppStorageManager.readFraming()
+        applyFramingToAll()
     }
 }

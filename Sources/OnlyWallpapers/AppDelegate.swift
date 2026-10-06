@@ -124,7 +124,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.sigUSR1Source = usr1Src
             }
 
-            if env["OW_VIDEO_TEST"] == "1" {
+            if env["OW_FRAMING_TEST"] == "1" {
+                signal(SIGUSR2, SIG_IGN)
+                let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+                usr2Src.setEventHandler { [weak controller] in
+                    controller?.zoomBy(0.1)
+                }
+                usr2Src.resume()
+                self.sigUSR2Source = usr2Src
+            } else if env["OW_VIDEO_TEST"] == "1" {
                 signal(SIGUSR2, SIG_IGN)
                 let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
                 // OW_VIDEO_TEST_SRC_FILE: path to a file whose content is the video path to copy.
@@ -158,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.sigUSR2Source = usr2Src
             }
 
-            let statusItem = StatusItemController(pickerEnabled: pickerEnabled, source: pickerSource)
+            let statusItem = StatusItemController(pickerEnabled: pickerEnabled, source: pickerSource, wallpaperController: controller)
             statusItem.onChooseVideo = { [weak controller] in
                 controller?.reloadVideo()
             }

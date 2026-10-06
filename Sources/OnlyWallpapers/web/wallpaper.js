@@ -19,6 +19,33 @@
 })();
 
 (function () {
+  function clamp(x, lo, hi, def) {
+    if (typeof x !== 'number' || !isFinite(x)) return def;
+    return Math.min(Math.max(x, lo), hi);
+  }
+  function applyFraming(cfg) {
+    var bg = document.getElementById('bg'); if (!bg) return;
+    var z  = clamp(cfg && cfg.zoom, 1, 2, 1);
+    var px = clamp(cfg && cfg.panX, -1, 1, 0);
+    var py = clamp(cfg && cfg.panY, -1, 1, 0);
+    var objX = (px + 1) / 2 * 100;
+    var objY = (py + 1) / 2 * 100;
+    var left = 50 * (1 - z) * (1 + px);
+    var top  = 50 * (1 - z) * (1 + py);
+    bg.style.width  = (100 * z) + '%';
+    bg.style.height = (100 * z) + '%';
+    bg.style.left   = left + '%';
+    bg.style.top    = top  + '%';
+    bg.style.right  = 'auto';
+    bg.style.bottom = 'auto';
+    bg.style.objectPosition = objX + '% ' + objY + '%';
+    window.__framingApplied = { zoom:z, panX:px, panY:py, objX:objX, objY:objY, left:left, top:top };
+  }
+  window.__setWallpaperFraming = applyFraming;
+  applyFraming(window.__wallpaperFraming);
+})();
+
+(function () {
   "use strict";
   var video = document.getElementById("bg");
   if (!video) return;

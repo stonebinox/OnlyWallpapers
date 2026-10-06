@@ -6,9 +6,11 @@ final class StatusItemController {
     private var copyInFlight: Bool = false
     private var chooseVideoItem: NSMenuItem?
     var onChooseVideo: (@MainActor () -> Void)?
+    private weak var wallpaperController: WallpaperController?
 
     // pickerEnabled requires source=appstore AND assets dir writable; source alone is not enough.
-    init(pickerEnabled: Bool, source: String) {
+    init(pickerEnabled: Bool, source: String, wallpaperController: WallpaperController?) {
+        self.wallpaperController = wallpaperController
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
             let image = NSImage(systemSymbolName: "photo.on.rectangle", accessibilityDescription: "OnlyWallpapers")
@@ -30,12 +32,56 @@ final class StatusItemController {
         chooseVideoItem = chooseItem
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_PICKER menuEnabled=\(chooseItem.isEnabled) source=\(source)\n".utf8))
 
+        let framingMenu = NSMenu()
+        let framingSubmenuItem = NSMenuItem(title: "Framing", action: nil, keyEquivalent: "")
+        framingSubmenuItem.submenu = framingMenu
+
+        let moveUpItem = NSMenuItem(title: "Move Up", action: #selector(framingMoveUp), keyEquivalent: "")
+        moveUpItem.target = self
+        framingMenu.addItem(moveUpItem)
+
+        let moveDownItem = NSMenuItem(title: "Move Down", action: #selector(framingMoveDown), keyEquivalent: "")
+        moveDownItem.target = self
+        framingMenu.addItem(moveDownItem)
+
+        let moveLeftItem = NSMenuItem(title: "Move Left", action: #selector(framingMoveLeft), keyEquivalent: "")
+        moveLeftItem.target = self
+        framingMenu.addItem(moveLeftItem)
+
+        let moveRightItem = NSMenuItem(title: "Move Right", action: #selector(framingMoveRight), keyEquivalent: "")
+        moveRightItem.target = self
+        framingMenu.addItem(moveRightItem)
+
+        let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(framingZoomIn), keyEquivalent: "")
+        zoomInItem.target = self
+        framingMenu.addItem(zoomInItem)
+
+        let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(framingZoomOut), keyEquivalent: "")
+        zoomOutItem.target = self
+        framingMenu.addItem(zoomOutItem)
+
+        framingMenu.addItem(NSMenuItem.separator())
+
+        let resetItem = NSMenuItem(title: "Reset Framing", action: #selector(framingReset), keyEquivalent: "")
+        resetItem.target = self
+        framingMenu.addItem(resetItem)
+
+        menu.addItem(framingSubmenuItem)
+
         let quitItem = NSMenuItem(title: "Quit OnlyWallpapers", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quitItem.target = nil
         menu.addItem(quitItem)
         item.menu = menu
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STATUSITEM created=\(item.button != nil)\n".utf8))
     }
+
+    @objc private func framingMoveUp() { wallpaperController?.panYBy(-0.05) }
+    @objc private func framingMoveDown() { wallpaperController?.panYBy(0.05) }
+    @objc private func framingMoveLeft() { wallpaperController?.panXBy(-0.05) }
+    @objc private func framingMoveRight() { wallpaperController?.panXBy(0.05) }
+    @objc private func framingZoomIn() { wallpaperController?.zoomBy(0.1) }
+    @objc private func framingZoomOut() { wallpaperController?.zoomBy(-0.1) }
+    @objc private func framingReset() { wallpaperController?.resetFraming() }
 
     @objc private func chooseVideoAction() {
         guard !copyInFlight, chooseVideoItem?.isEnabled == true else { return }

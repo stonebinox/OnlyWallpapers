@@ -5,6 +5,71 @@ enum AppStorageManager {
 
     static var seedFailed: Bool = false
 
+    struct FramingConfig {
+        var zoom: Double
+        var panX: Double
+        var panY: Double
+    }
+
+    static var currentFraming: FramingConfig = readFraming()
+
+    private static func clampFraming(_ cfg: FramingConfig) -> FramingConfig {
+        func cl(_ x: Double, lo: Double, hi: Double, def: Double) -> Double {
+            guard x.isFinite else { return def }
+            return min(max(x, lo), hi)
+        }
+        return FramingConfig(
+            zoom: cl(cfg.zoom, lo: 1, hi: 2, def: 1),
+            panX: cl(cfg.panX, lo: -1, hi: 1, def: 0),
+            panY: cl(cfg.panY, lo: -1, hi: 1, def: 0)
+        )
+    }
+
+    static func readFraming() -> FramingConfig {
+        let url = appSupportRoot().appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return FramingConfig(zoom: 1, panX: 0, panY: 0)
+        }
+        func field(_ key: String, lo: Double, hi: Double, def: Double) -> Double {
+            guard let v = obj[key], let n = (v as? NSNumber)?.doubleValue, n.isFinite else { return def }
+            return min(max(n, lo), hi)
+        }
+        return FramingConfig(
+            zoom: field("zoom", lo: 1, hi: 2, def: 1),
+            panX: field("panX", lo: -1, hi: 1, def: 0),
+            panY: field("panY", lo: -1, hi: 1, def: 0)
+        )
+    }
+
+    @discardableResult
+    static func writeFraming(_ cfg: FramingConfig) -> Bool {
+        let clamped = clampFraming(cfg)
+        let r2: (Double) -> Double = { ($0 * 100).rounded() / 100 }
+        let obj: [String: Any] = [
+            "zoom": r2(clamped.zoom),
+            "panX": r2(clamped.panX),
+            "panY": r2(clamped.panY)
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return false }
+        let url = appSupportRoot().appendingPathComponent("config.json")
+        let partial = appSupportRoot().appendingPathComponent("config.json.partial")
+        do {
+            try? FileManager.default.createDirectory(at: appSupportRoot(), withIntermediateDirectories: true)
+            try data.write(to: partial, options: .atomic)
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: partial)
+            } else {
+                try FileManager.default.moveItem(at: partial, to: url)
+            }
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: partial)
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_FRAMING persist=fail error=\(error.localizedDescription)\n".utf8))
+            return false
+        }
+    }
+
     static func appSupportRoot() -> URL {
         let env = ProcessInfo.processInfo.environment
         if let override = env["OW_APP_SUPPORT_DIR"], !override.isEmpty {

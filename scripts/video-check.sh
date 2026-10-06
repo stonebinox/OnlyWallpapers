@@ -10,6 +10,15 @@ PID=""
 TMPOUT=""
 SIGINT_CLEAN=0
 
+OW_SUPPORT_TMP=""
+CLIP_B=""
+COPYHOOK_PID=""
+COPYHOOK_TMP=""
+COPYHOOK_OUT=""
+COPY_SRC_FILE=""
+# FIX 8: backup/restore the source-tree bg.mp4 so the gate does not clobber user content.
+SOURCE_BG="Sources/OnlyWallpapers/web/assets/bg.mp4"
+SOURCE_BG_BACKUP=""
 cleanup() {
     if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
         kill -INT "$PID" 2>/dev/null || true
@@ -20,6 +29,32 @@ cleanup() {
         wait "$PID" 2>/dev/null || true
     fi
     [[ -n "$TMPOUT" ]] && rm -f "$TMPOUT" || true
+    [[ -n "$OW_SUPPORT_TMP" ]] && rm -rf "$OW_SUPPORT_TMP" || true
+    # FIX 8: restore original source bg.mp4.
+    if [[ -n "$SOURCE_BG_BACKUP" ]] && [[ -f "$SOURCE_BG_BACKUP" ]]; then
+        mv -f "$SOURCE_BG_BACKUP" "$SOURCE_BG"
+    elif [[ -n "$SOURCE_BG_BACKUP" ]]; then
+        rm -f "$SOURCE_BG" 2>/dev/null || true
+    else
+        # No backup = file was absent on entry; delete any test-generated clip.
+        rm -f "$SOURCE_BG" 2>/dev/null || true
+        # Clobber-check assertion: SOURCE_BG must be absent after this path (FIX 6).
+        if [[ -f "$SOURCE_BG" ]]; then
+            echo "[clobber-check] FAIL: $SOURCE_BG persists after no-backup-entry cleanup (user tree clobbered)" >&2
+        fi
+    fi
+    [[ -n "$CLIP_B" ]] && rm -f "$CLIP_B" 2>/dev/null || true
+    [[ -n "$COPY_SRC_FILE" ]] && rm -f "$COPY_SRC_FILE" 2>/dev/null || true
+    if [[ -n "$COPYHOOK_PID" ]] && kill -0 "$COPYHOOK_PID" 2>/dev/null; then
+        kill -INT "$COPYHOOK_PID" 2>/dev/null || true
+        sleep 0.4
+        if kill -0 "$COPYHOOK_PID" 2>/dev/null; then
+            kill -KILL "$COPYHOOK_PID" 2>/dev/null || true
+        fi
+        wait "$COPYHOOK_PID" 2>/dev/null || true
+    fi
+    [[ -n "$COPYHOOK_OUT" ]] && rm -f "$COPYHOOK_OUT" || true
+    [[ -n "$COPYHOOK_TMP" ]] && rm -rf "$COPYHOOK_TMP" || true
 }
 trap cleanup EXIT
 
@@ -43,7 +78,12 @@ for cmd in ffmpeg ffprobe screencapture; do
     fi
 done
 
-# Step 2: generate test clip
+# Step 2: generate test clip (FIX 8: back up source-tree bg.mp4 first so it is restored on exit)
+if [[ -f "$SOURCE_BG" ]]; then
+    SOURCE_BG_BACKUP="${SOURCE_BG}.video-check-bak-$$"
+    cp "$SOURCE_BG" "$SOURCE_BG_BACKUP"
+    echo "[asset] Backed up $SOURCE_BG -> $SOURCE_BG_BACKUP"
+fi
 echo "[asset] Running generate-test-bg.sh..."
 bash "$REPO_ROOT/scripts/generate-test-bg.sh"
 
@@ -64,7 +104,8 @@ echo "[build] Binary: $BIN"
 # Step 4: launch
 TMPOUT="$(mktemp)"
 echo "[launch] Starting $BIN..."
-env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE "$BIN" >"$TMPOUT" 2>&1 &
+OW_SUPPORT_TMP="$(mktemp -d)"
+OW_APP_SUPPORT_DIR="$OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE OW_VIDEO_TEST=1 "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[launch] PID=$PID"
 
@@ -360,7 +401,431 @@ if [[ $PIXEL_TCC_FAIL -ne 0 ]]; then
     echo "[pixel] NOTE: TCC denied screencapture for one or more windows (pixel corroboration skipped; native gates are authoritative)"
 fi
 
-# Step 9: verdict
+# Step 9: MEDIA-SWITCH gate (FIX 6: proves clip B replaced clip A, not a no-op reload)
+# Asserts (a) ONLYWALLPAPERS_VIDEO applied with new durationMs confirming clip B on EVERY view,
+# AND (b) ONLYWALLPAPERS_VIDEO media state=playing 1s after the reload.
+echo "[media-switch] Starting media-switch gate..."
+
+CLIP_B="/tmp/ow-vc-clip-b-$$.mp4"
+CLIP_B_DURATION=3
+
+# Generate a distinct clip B (blue, shorter duration to distinguish from clip A)
+ffmpeg -y -f lavfi -i "color=c=blue:size=320x240:rate=30" -t "$CLIP_B_DURATION" \
+    -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$CLIP_B" >/dev/null 2>&1
+
+ASSETS_DIR="$OW_SUPPORT_TMP/web/assets"
+
+if [[ ! -d "$ASSETS_DIR" ]]; then
+    echo "HARD FAIL (media-switch): assets dir '$ASSETS_DIR' not present; cannot exercise the reload path. The gate must not pass without actually running the media-switch."
+    cat "$TMPOUT" || true
+    exit 1
+fi
+
+SLOT="$ASSETS_DIR/bg.mp4"
+PARTIAL="$ASSETS_DIR/bg.mp4.partial"
+cp "$CLIP_B" "$PARTIAL"
+mv -f "$PARTIAL" "$SLOT"
+
+BEFORE_RELOAD_COUNT="$(grep -c 'ONLYWALLPAPERS_VIDEO reload' "$TMPOUT" 2>/dev/null || true)"
+kill -USR2 "$PID" 2>/dev/null || true
+
+# Wait for new ONLYWALLPAPERS_VIDEO reload line and capture rev token
+RELOAD_SAW=0
+REV_TOKEN=""
+RELOAD_LINE=""
+for i in $(seq 1 30); do
+    AFTER_RELOAD_COUNT="$(grep -c 'ONLYWALLPAPERS_VIDEO reload' "$TMPOUT" 2>/dev/null || true)"
+    if [[ "$AFTER_RELOAD_COUNT" -gt "$BEFORE_RELOAD_COUNT" ]]; then
+        RELOAD_SAW=1
+        RELOAD_LINE="$(grep 'ONLYWALLPAPERS_VIDEO reload' "$TMPOUT" | tail -1)"
+        REV_TOKEN="$(echo "$RELOAD_LINE" | grep -oE 'rev=[0-9]+' | head -1 | sed 's/rev=//')"
+        echo "[media-switch] reload confirmed: $RELOAD_LINE (rev=$REV_TOKEN)"
+        break
+    fi
+    sleep 0.1
+done
+
+if [[ $RELOAD_SAW -ne 1 ]]; then
+    echo "HARD FAIL (media-switch): ONLYWALLPAPERS_VIDEO reload not seen within 3s after SIGUSR2"
+    cat "$TMPOUT" || true
+    exit 1
+fi
+
+if [[ -z "$REV_TOKEN" ]]; then
+    echo "HARD FAIL (media-switch): could not parse rev= from reload line: $RELOAD_LINE"
+    cat "$TMPOUT" || true
+    exit 1
+fi
+
+# Wait for applied lines from ALL views (WIN_COUNT) for this rev token.
+# A swap that updated only one of N screens must FAIL.
+CH_DUR_EXPECTED=$(( CLIP_B_DURATION * 1000 ))
+CH_DUR_LOW=$(( CH_DUR_EXPECTED - 500 ))
+CH_DUR_HIGH=$(( CH_DUR_EXPECTED + 500 ))
+
+MS_APPLIED_LINES=()
+for i in $(seq 1 80); do
+    MS_APPLIED_LINES=()
+    while IFS= read -r _ms_l; do [[ -z "$_ms_l" ]] && continue; MS_APPLIED_LINES+=("$_ms_l"); done \
+        < <(grep -E "ONLYWALLPAPERS_VIDEO applied.*rev=${REV_TOKEN}( |$)" "$TMPOUT" 2>/dev/null || true)
+    if [[ "${#MS_APPLIED_LINES[@]}" -ge "$WIN_COUNT" ]]; then break; fi
+    sleep 0.1
+done
+
+if [[ "${#MS_APPLIED_LINES[@]}" -lt "$WIN_COUNT" ]]; then
+    echo "HARD FAIL (media-switch): expected $WIN_COUNT applied rev=${REV_TOKEN} lines (one per view), got ${#MS_APPLIED_LINES[@]}"
+    cat "$TMPOUT" || true
+    exit 1
+fi
+
+MS_DISTINCT_WINS="$(printf '%s\n' "${MS_APPLIED_LINES[@]}" | grep -o 'win=[0-9]*' | sort -u | wc -l | tr -d ' ')"
+if [[ "$MS_DISTINCT_WINS" -lt "$WIN_COUNT" ]]; then
+    echo "HARD FAIL (media-switch): $MS_DISTINCT_WINS distinct win= values in applied lines, expected $WIN_COUNT"
+    cat "$TMPOUT" || true
+    exit 1
+fi
+
+MS_DUR_FAIL=0
+for _ms_line in "${MS_APPLIED_LINES[@]}"; do
+    _ms_win="$(echo "$_ms_line" | grep -oE 'win=[0-9]+' | head -1)"
+    _ms_dur="$(echo "$_ms_line" | grep -oE 'durationMs=[0-9]+' | head -1 | sed 's/durationMs=//' || true)"
+    if [[ -z "$_ms_dur" ]]; then
+        echo "HARD FAIL (media-switch): no durationMs in applied line: $_ms_line"
+        MS_DUR_FAIL=1
+        continue
+    fi
+    if [[ "$_ms_dur" -lt "$CH_DUR_LOW" ]] || [[ "$_ms_dur" -gt "$CH_DUR_HIGH" ]]; then
+        echo "HARD FAIL (media-switch): $_ms_win durationMs=$_ms_dur not in [${CH_DUR_LOW},${CH_DUR_HIGH}] for ${CLIP_B_DURATION}s clip B"
+        MS_DUR_FAIL=1
+    fi
+done
+if [[ $MS_DUR_FAIL -ne 0 ]]; then
+    cat "$TMPOUT" || true
+    exit 1
+fi
+echo "[media-switch] PASS (a): durationMs on all $WIN_COUNT view(s) confirms clip B (not a no-op reload)"
+
+# (b) Wait for ONLYWALLPAPERS_VIDEO media state=playing on EVERY window for this rev.
+# One paused window while another plays must HARD FAIL.
+MS_PLAY_WIN_OK=()
+for _mspw in "${ALL_WINS[@]}"; do MS_PLAY_WIN_OK+=("0"); done
+
+for i in $(seq 1 20); do
+    _ms_all_play=1
+    for _mspi in $(seq 0 $(( ${#ALL_WINS[@]} - 1 ))); do
+        _mspw="${ALL_WINS[$_mspi]}"
+        if [[ "${MS_PLAY_WIN_OK[$_mspi]}" -eq 0 ]]; then
+            if grep -qE "ONLYWALLPAPERS_VIDEO media win=${_mspw}[^0-9].*rev=${REV_TOKEN}.*state=playing" "$TMPOUT" 2>/dev/null; then
+                MS_PLAY_WIN_OK[$_mspi]="1"
+                echo "[media-switch] win=${_mspw} state=playing confirmed for rev=${REV_TOKEN}"
+            else
+                _ms_all_play=0
+            fi
+        fi
+    done
+    if [[ $_ms_all_play -eq 1 ]]; then break; fi
+    sleep 0.3
+done
+
+MS_PLAY_FAIL=0
+for _mspi in $(seq 0 $(( ${#ALL_WINS[@]} - 1 ))); do
+    _mspw="${ALL_WINS[$_mspi]}"
+    if [[ "${MS_PLAY_WIN_OK[$_mspi]}" -ne 1 ]]; then
+        echo "HARD FAIL (media-switch): win=${_mspw} no state=playing for rev=${REV_TOKEN} within 6s"
+        MS_PLAY_FAIL=1
+    fi
+done
+if [[ $MS_PLAY_FAIL -ne 0 ]]; then
+    cat "$TMPOUT" || true
+    exit 1
+fi
+echo "[media-switch] PASS (b): state=playing confirmed on all $WIN_COUNT window(s) for rev=${REV_TOKEN}"
+
+# Step 10 (copy-hook): Exercise the first-video-no-slot and replace branches
+# of copyVideoFile via the OW_VIDEO_TEST_SRC_FILE hook. Uses a separate process
+# so we can control OW_VIDEO_TEST_SRC_FILE at signal time.
+echo "[copy-hook] Starting copy-hook gate (first-install + replace)..."
+
+COPYHOOK_TMP="$(mktemp -d)"
+COPYHOOK_OUT="$(mktemp)"
+COPY_SRC_FILE="$(mktemp)"
+
+CLIP_A_ABS="$REPO_ROOT/Sources/OnlyWallpapers/web/assets/bg.mp4"
+CLIP_A_DUR_MS=$(( 6 * 1000 ))
+CLIP_B_DUR_MS=$(( CLIP_B_DURATION * 1000 ))
+
+OW_APP_SUPPORT_DIR="$COPYHOOK_TMP" env -u WALLPAPER_WEB_DIR OW_VIDEO_TEST=1 \
+    OW_VIDEO_TEST_SRC_FILE="$COPY_SRC_FILE" \
+    "$BIN" >"$COPYHOOK_OUT" 2>&1 &
+COPYHOOK_PID=$!
+echo "[copy-hook] PID=$COPYHOOK_PID"
+
+# Wait for loaded=ok
+CH_LOADED=0
+for i in $(seq 1 80); do
+    if ! kill -0 "$COPYHOOK_PID" 2>/dev/null; then
+        echo "HARD FAIL (copy-hook): process exited before loaded=ok"
+        cat "$COPYHOOK_OUT" || true
+        exit 1
+    fi
+    if grep -q 'ONLYWALLPAPERS_WEB.*loaded=ok' "$COPYHOOK_OUT" 2>/dev/null; then
+        CH_LOADED=1
+        break
+    fi
+    sleep 0.1
+done
+if [[ $CH_LOADED -ne 1 ]]; then
+    echo "HARD FAIL (copy-hook): loaded=ok never appeared"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+
+# Wait for initial media=playing (proves app is running normally)
+CH_INIT_PLAY=0
+for i in $(seq 1 40); do
+    if grep -qE 'ONLYWALLPAPERS_WEB.*media=playing' "$COPYHOOK_OUT" 2>/dev/null; then
+        CH_INIT_PLAY=1
+        break
+    fi
+    sleep 0.1
+done
+# Non-fatal: initial play check only confirms the app is alive; copy-hook is the real gate.
+if [[ $CH_INIT_PLAY -eq 1 ]]; then
+    echo "[copy-hook] initial media=playing confirmed"
+else
+    echo "[copy-hook] initial media=playing not yet seen (continuing)"
+fi
+
+# --- First-install branch: delete the seeded slot, then SIGUSR2 to copy clip A ---
+CH_ASSETS_DIR="$COPYHOOK_TMP/web/assets"
+rm -f "$CH_ASSETS_DIR/bg.mp4" 2>/dev/null || true
+echo "[copy-hook] slot deleted, testing first-install branch..."
+
+# Write clip A path to the src file
+printf '%s' "$CLIP_A_ABS" > "$COPY_SRC_FILE"
+
+CH_BEFORE_SLOT_A="$(grep -c 'ONLYWALLPAPERS_VIDEO slot=ok' "$COPYHOOK_OUT" 2>/dev/null || true)"
+kill -USR2 "$COPYHOOK_PID"
+
+# Wait for slot=ok
+CH_SLOT_A_SEEN=0
+for i in $(seq 1 60); do
+    CH_AFTER_SLOT="$(grep -c 'ONLYWALLPAPERS_VIDEO slot=ok' "$COPYHOOK_OUT" 2>/dev/null || true)"
+    if [[ "$CH_AFTER_SLOT" -gt "$CH_BEFORE_SLOT_A" ]]; then
+        CH_SLOT_A_SEEN=1
+        break
+    fi
+    sleep 0.1
+done
+if [[ $CH_SLOT_A_SEEN -ne 1 ]]; then
+    echo "HARD FAIL (copy-hook first-install): ONLYWALLPAPERS_VIDEO slot=ok not seen within 6s"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+echo "[copy-hook] first-install slot=ok confirmed"
+
+# Wait for reload and applied line
+CH_RELOAD_A_SEEN=0
+CH_REV_A=""
+for i in $(seq 1 30); do
+    CH_RELOAD_LINE="$(grep 'ONLYWALLPAPERS_VIDEO reload' "$COPYHOOK_OUT" | tail -1 || true)"
+    if [[ -n "$CH_RELOAD_LINE" ]]; then
+        CH_REV_A="$(echo "$CH_RELOAD_LINE" | grep -oE 'rev=[0-9]+' | head -1 | sed 's/rev=//')"
+        CH_RELOAD_A_SEEN=1
+        break
+    fi
+    sleep 0.1
+done
+if [[ $CH_RELOAD_A_SEEN -ne 1 ]] || [[ -z "$CH_REV_A" ]]; then
+    echo "HARD FAIL (copy-hook first-install): reload line or rev token not found"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+
+# Wait for applied line with matching rev
+CH_APPLIED_A_SEEN=0
+for i in $(seq 1 50); do
+    if grep -qE "ONLYWALLPAPERS_VIDEO applied.*rev=${CH_REV_A}( |$)" "$COPYHOOK_OUT" 2>/dev/null; then
+        CH_APPLIED_A_SEEN=1
+        break
+    fi
+    sleep 0.1
+done
+if [[ $CH_APPLIED_A_SEEN -ne 1 ]]; then
+    echo "HARD FAIL (copy-hook first-install): no applied rev=${CH_REV_A} line within 5s"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+CH_APPLIED_A_LINE="$(grep -E "ONLYWALLPAPERS_VIDEO applied.*rev=${CH_REV_A}( |$)" "$COPYHOOK_OUT" | head -1)"
+CH_DUR_A="$(echo "$CH_APPLIED_A_LINE" | grep -oE 'durationMs=[0-9]+' | head -1 | sed 's/durationMs=//' || true)"
+if [[ -z "$CH_DUR_A" ]]; then
+    echo "HARD FAIL (copy-hook first-install): no durationMs in applied line: $CH_APPLIED_A_LINE"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+CH_DUR_A_LOW=$(( CLIP_A_DUR_MS - 500 ))
+CH_DUR_A_HIGH=$(( CLIP_A_DUR_MS + 500 ))
+if [[ "$CH_DUR_A" -lt "$CH_DUR_A_LOW" ]] || [[ "$CH_DUR_A" -gt "$CH_DUR_A_HIGH" ]]; then
+    echo "HARD FAIL (copy-hook first-install): durationMs=$CH_DUR_A not in [${CH_DUR_A_LOW},${CH_DUR_A_HIGH}] for 6s clip A"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+echo "[copy-hook] PASS (first-install): durationMs=$CH_DUR_A, applied rev=${CH_REV_A}"
+
+# Wait for media=playing after first-install
+CH_PLAY_A_SEEN=0
+for i in $(seq 1 20); do
+    if grep -qE "ONLYWALLPAPERS_VIDEO media.*rev=${CH_REV_A}.*state=playing" "$COPYHOOK_OUT" 2>/dev/null; then
+        CH_PLAY_A_SEEN=1
+        break
+    fi
+    sleep 0.3
+done
+if [[ $CH_PLAY_A_SEEN -ne 1 ]]; then
+    echo "HARD FAIL (copy-hook first-install): no media state=playing for rev=${CH_REV_A}"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+echo "[copy-hook] PASS (first-install): media=playing confirmed"
+
+# --- Replace branch: slot now has clip A; SIGUSR2 with clip B path ---
+echo "[copy-hook] Testing replace branch (slot exists, replacing with clip B)..."
+
+printf '%s' "$CLIP_B" > "$COPY_SRC_FILE"
+
+CH_BEFORE_SLOT_B="$(grep -c 'ONLYWALLPAPERS_VIDEO slot=ok' "$COPYHOOK_OUT" 2>/dev/null || true)"
+kill -USR2 "$COPYHOOK_PID"
+
+# Wait for new slot=ok
+CH_SLOT_B_SEEN=0
+for i in $(seq 1 60); do
+    CH_AFTER_SLOT_B="$(grep -c 'ONLYWALLPAPERS_VIDEO slot=ok' "$COPYHOOK_OUT" 2>/dev/null || true)"
+    if [[ "$CH_AFTER_SLOT_B" -gt "$CH_BEFORE_SLOT_B" ]]; then
+        CH_SLOT_B_SEEN=1
+        break
+    fi
+    sleep 0.1
+done
+if [[ $CH_SLOT_B_SEEN -ne 1 ]]; then
+    echo "HARD FAIL (copy-hook replace): ONLYWALLPAPERS_VIDEO slot=ok (second) not seen within 6s"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+echo "[copy-hook] replace slot=ok confirmed"
+
+# Wait for new reload with new rev
+CH_REV_B=""
+for i in $(seq 1 30); do
+    CH_NEW_RELOAD="$(grep 'ONLYWALLPAPERS_VIDEO reload' "$COPYHOOK_OUT" | tail -1 || true)"
+    CH_REV_B_CANDIDATE="$(echo "$CH_NEW_RELOAD" | grep -oE 'rev=[0-9]+' | head -1 | sed 's/rev=//')"
+    if [[ -n "$CH_REV_B_CANDIDATE" ]] && [[ "$CH_REV_B_CANDIDATE" != "$CH_REV_A" ]]; then
+        CH_REV_B="$CH_REV_B_CANDIDATE"
+        break
+    fi
+    sleep 0.1
+done
+if [[ -z "$CH_REV_B" ]]; then
+    echo "HARD FAIL (copy-hook replace): new reload rev not found"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+
+# Wait for applied lines from ALL views for rev B.
+# A swap that updated only one of N screens must FAIL.
+CH_DUR_B_LOW=$(( CLIP_B_DUR_MS - 500 ))
+CH_DUR_B_HIGH=$(( CLIP_B_DUR_MS + 500 ))
+
+CH_APPLIED_B_LINES=()
+for i in $(seq 1 80); do
+    CH_APPLIED_B_LINES=()
+    while IFS= read -r _ch_l; do [[ -z "$_ch_l" ]] && continue; CH_APPLIED_B_LINES+=("$_ch_l"); done \
+        < <(grep -E "ONLYWALLPAPERS_VIDEO applied.*rev=${CH_REV_B}( |$)" "$COPYHOOK_OUT" 2>/dev/null || true)
+    if [[ "${#CH_APPLIED_B_LINES[@]}" -ge "$WIN_COUNT" ]]; then break; fi
+    sleep 0.1
+done
+if [[ "${#CH_APPLIED_B_LINES[@]}" -lt "$WIN_COUNT" ]]; then
+    echo "HARD FAIL (copy-hook replace): expected $WIN_COUNT applied rev=${CH_REV_B} lines, got ${#CH_APPLIED_B_LINES[@]}"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+CH_B_DISTINCT="$(printf '%s\n' "${CH_APPLIED_B_LINES[@]}" | grep -o 'win=[0-9]*' | sort -u | wc -l | tr -d ' ')"
+if [[ "$CH_B_DISTINCT" -lt "$WIN_COUNT" ]]; then
+    echo "HARD FAIL (copy-hook replace): $CH_B_DISTINCT distinct win= values in applied lines, expected $WIN_COUNT"
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+CH_DUR_B_FAIL=0
+for _ch_line in "${CH_APPLIED_B_LINES[@]}"; do
+    _ch_win="$(echo "$_ch_line" | grep -oE 'win=[0-9]+' | head -1)"
+    _ch_dur="$(echo "$_ch_line" | grep -oE 'durationMs=[0-9]+' | head -1 | sed 's/durationMs=//' || true)"
+    if [[ -z "$_ch_dur" ]]; then
+        echo "HARD FAIL (copy-hook replace): no durationMs in applied line: $_ch_line"
+        CH_DUR_B_FAIL=1
+        continue
+    fi
+    if [[ "$_ch_dur" -lt "$CH_DUR_B_LOW" ]] || [[ "$_ch_dur" -gt "$CH_DUR_B_HIGH" ]]; then
+        echo "HARD FAIL (copy-hook replace): $_ch_win durationMs=$_ch_dur not in [${CH_DUR_B_LOW},${CH_DUR_B_HIGH}] for ${CLIP_B_DURATION}s clip B"
+        CH_DUR_B_FAIL=1
+    fi
+done
+if [[ $CH_DUR_B_FAIL -ne 0 ]]; then
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+echo "[copy-hook] PASS (replace): durationMs on all $WIN_COUNT view(s) confirms clip B, applied rev=${CH_REV_B}"
+
+# Wait for media=playing on EVERY window for replace.
+# One paused window while another plays must HARD FAIL.
+CH_B_WINS=()
+while IFS= read -r _cbw; do CH_B_WINS+=("$_cbw"); done \
+    < <(printf '%s\n' "${CH_APPLIED_B_LINES[@]}" | grep -oE 'win=[0-9]+' | sort -u | cut -d= -f2)
+
+CH_PLAY_B_WIN_OK=()
+for _cbw in "${CH_B_WINS[@]}"; do CH_PLAY_B_WIN_OK+=("0"); done
+
+for i in $(seq 1 20); do
+    _cb_all_play=1
+    for _cbpi in $(seq 0 $(( ${#CH_B_WINS[@]} - 1 ))); do
+        _cbpw="${CH_B_WINS[$_cbpi]}"
+        if [[ "${CH_PLAY_B_WIN_OK[$_cbpi]}" -eq 0 ]]; then
+            if grep -qE "ONLYWALLPAPERS_VIDEO media win=${_cbpw}[^0-9].*rev=${CH_REV_B}.*state=playing" "$COPYHOOK_OUT" 2>/dev/null; then
+                CH_PLAY_B_WIN_OK[$_cbpi]="1"
+                echo "[copy-hook] win=${_cbpw} state=playing confirmed for rev=${CH_REV_B} (replace)"
+            else
+                _cb_all_play=0
+            fi
+        fi
+    done
+    if [[ $_cb_all_play -eq 1 ]]; then break; fi
+    sleep 0.3
+done
+
+CH_PLAY_B_FAIL=0
+for _cbpi in $(seq 0 $(( ${#CH_B_WINS[@]} - 1 ))); do
+    _cbpw="${CH_B_WINS[$_cbpi]}"
+    if [[ "${CH_PLAY_B_WIN_OK[$_cbpi]}" -ne 1 ]]; then
+        echo "HARD FAIL (copy-hook replace): win=${_cbpw} no state=playing for rev=${CH_REV_B}"
+        CH_PLAY_B_FAIL=1
+    fi
+done
+if [[ $CH_PLAY_B_FAIL -ne 0 ]]; then
+    cat "$COPYHOOK_OUT" || true
+    exit 1
+fi
+echo "[copy-hook] PASS (replace): state=playing confirmed on all $WIN_COUNT window(s) for rev=${CH_REV_B}"
+
+# Terminate copy-hook process
+kill -INT "$COPYHOOK_PID" 2>/dev/null || true
+sleep 0.5
+if kill -0 "$COPYHOOK_PID" 2>/dev/null; then
+    kill -KILL "$COPYHOOK_PID" 2>/dev/null || true
+fi
+wait "$COPYHOOK_PID" 2>/dev/null || true
+COPYHOOK_PID=""
+
+echo "[copy-hook] PASS: first-install and replace branches verified"
+
+# Step 11: verdict
 # PASS iff every win passed HARD GATE A (early media=playing) and
 # HARD GATE B (late media=playing, proving loop). Pixel results are corroboration only.
 echo ""

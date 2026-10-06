@@ -68,6 +68,7 @@ echo "[standalone] Copying .app to temp dir outside repo..."
 TMP_DIR=""
 APP_PID=""
 
+PKG_OW_SUPPORT_TMP=""
 cleanup() {
     if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
         kill -INT "$APP_PID" 2>/dev/null || true
@@ -81,6 +82,7 @@ cleanup() {
     if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
         rm -rf "$TMP_DIR"
     fi
+    [[ -n "$PKG_OW_SUPPORT_TMP" ]] && rm -rf "$PKG_OW_SUPPORT_TMP" || true
 }
 trap cleanup EXIT
 
@@ -98,10 +100,11 @@ TMPOUT="$TMP_DIR/stdout.txt"
 
 # Change cwd to outside the repo so the app cannot accidentally find source-tree files
 cd "$TMP_DIR"
+PKG_OW_SUPPORT_TMP="$(mktemp -d)"
 if command -v setsid >/dev/null 2>&1; then
-    env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST setsid "$TMP_BIN" >"$TMPOUT" 2>&1 &
+    OW_APP_SUPPORT_DIR="$PKG_OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST setsid "$TMP_BIN" >"$TMPOUT" 2>&1 &
 else
-    env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$TMP_BIN" >"$TMPOUT" 2>&1 &
+    OW_APP_SUPPORT_DIR="$PKG_OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$TMP_BIN" >"$TMPOUT" 2>&1 &
 fi
 APP_PID=$!
 echo "[standalone] PID=$APP_PID"
@@ -153,12 +156,12 @@ else
     fail "READY missing policy=accessory: $READY_LINE"
 fi
 
-# --- Assert WEB_RESOLVE status=ok source=bundle ---
+# --- Assert WEB_RESOLVE status=ok source=appstore ---
 RESOLVE_LINE="$(grep "ONLYWALLPAPERS_WEB_RESOLVE" "$TMPOUT" | head -1 || true)"
-if echo "$RESOLVE_LINE" | grep -Eq 'status=ok source=bundle( |$)'; then
-    pass "WEB_RESOLVE status=ok source=bundle"
+if echo "$RESOLVE_LINE" | grep -Eq 'status=ok source=appstore( |$)'; then
+    pass "WEB_RESOLVE status=ok source=appstore"
 else
-    fail "WEB_RESOLVE wrong: $RESOLVE_LINE"
+    fail "WEB_RESOLVE wrong (expected source=appstore): $RESOLVE_LINE"
     echo "--- output ---"
     cat "$TMPOUT" || true
     echo ""
@@ -166,23 +169,61 @@ else
     exit 1
 fi
 
-# --- Assert resolve dir is EXACTLY the app's own bundle web dir, not .build ---
+# --- Assert byte equality of seeded code files vs app bundle originals (FIX 9) ---
+APP_BUNDLE_WEB="$TMP_APP/OnlyWallpapers_OnlyWallpapers.bundle/web"
+echo "[byte-eq] Checking seeded code files are byte-identical to app bundle originals..."
+PKG_BYTE_EQ_FAIL=0
+for _name in index.html style.css wallpaper.js; do
+    _seeded="$PKG_OW_SUPPORT_TMP/web/$_name"
+    _bundle_orig="$APP_BUNDLE_WEB/$_name"
+    if [[ ! -f "$_seeded" ]]; then
+        fail "byte-eq: seeded file missing: $_seeded"
+        PKG_BYTE_EQ_FAIL=1
+    elif [[ ! -f "$_bundle_orig" ]]; then
+        fail "byte-eq: app bundle original missing: $_bundle_orig"
+        PKG_BYTE_EQ_FAIL=1
+    elif ! cmp -s "$_seeded" "$_bundle_orig"; then
+        fail "byte-eq: $_name differs between seeded and app bundle"
+        PKG_BYTE_EQ_FAIL=1
+    else
+        pass "byte-eq: $_name byte-identical to app bundle"
+    fi
+done
+if [[ $PKG_BYTE_EQ_FAIL -ne 0 ]]; then
+    echo "--- output ---"
+    cat "$TMPOUT" || true
+    echo "=== FAIL: $FAIL_COUNT check(s) failed, $PASS_COUNT passed ==="
+    exit 1
+fi
+
+# --- Assert resolve dir is under PKG_OW_SUPPORT_TMP (app-storage temp), not .build ---
 RESOLVE_DIR="$(echo "$RESOLVE_LINE" | grep -oE 'dir=[^ ]+' | head -1 | sed 's/^dir=//' || true)"
 echo "[standalone] Resolved dir: $RESOLVE_DIR"
 
 norm() { cd "$1" 2>/dev/null && pwd -P; }
-EXPECT="$TMP_APP/OnlyWallpapers_OnlyWallpapers.bundle/web"
+EXPECT_APPSTORE="$PKG_OW_SUPPORT_TMP/web"
 
 if echo "$RESOLVE_DIR" | grep -q "/.build/"; then
-    fail "Resolve dir contains /.build/ (bundle was not found; fallback to source tree): $RESOLVE_DIR"
-else
-    NORM_RESOLVE="$(norm "$RESOLVE_DIR" || true)"
-    NORM_EXPECT="$(norm "$EXPECT" || true)"
-    if [ "$NORM_RESOLVE" = "$NORM_EXPECT" ]; then
-        pass "Resolve dir is exactly app bundle web dir: $RESOLVE_DIR"
+    fail "Resolve dir contains /.build/ (source tree, not appstore): $RESOLVE_DIR"
+elif [[ "$RESOLVE_DIR" == "$PKG_OW_SUPPORT_TMP"* ]]; then
+    pass "Resolve dir is under app-storage temp dir: $RESOLVE_DIR"
+    SEED_LINE="$(grep 'ONLYWALLPAPERS_SEED' "$TMPOUT" | head -1 || true)"
+    if echo "$SEED_LINE" | grep -q 'status=ok'; then
+        if echo "$SEED_LINE" | grep -q "/$TMP_APP/"; then
+            pass "SEED source path is inside temp .app bundle (not .build)"
+        else
+            SEED_SRC="$(echo "$SEED_LINE" | grep -oE 'source=[^ ]+' | head -1 | sed 's/source=//' || true)"
+            if echo "$SEED_SRC" | grep -q "/.build/"; then
+                fail "SEED source contains /.build/ (should be inside the .app bundle): $SEED_LINE"
+            else
+                pass "SEED source is not from .build: $SEED_LINE"
+            fi
+        fi
     else
-        fail "Resolve dir mismatch. resolved=$RESOLVE_DIR expect=$EXPECT"
+        fail "SEED line missing or not status=ok: $SEED_LINE"
     fi
+else
+    fail "Resolve dir is not under PKG_OW_SUPPORT_TMP. resolved=$RESOLVE_DIR expect=$EXPECT_APPSTORE"
 fi
 
 # --- Poll for WINDOWS count ---

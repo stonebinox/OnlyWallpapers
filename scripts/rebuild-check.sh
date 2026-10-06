@@ -38,13 +38,17 @@ FAKE_FILE="$(mktemp)"
 TMPOUT="$(mktemp)"
 TMPOUT_C=""
 TMPOUT_D=""
+TMPOUT_E=""
 FAKE_FILE_D=""
 PID=""
 PID_C=""
 PID_D=""
+PID_E=""
+OW_NORESEED_TMP=""
+NR_STAGED_COPIES=""
 
 cleanup() {
-    for _pid in "${PID:-}" "${PID_C:-}" "${PID_D:-}"; do
+    for _pid in "${PID:-}" "${PID_C:-}" "${PID_D:-}" "${PID_E:-}"; do
         [[ -z "$_pid" ]] && continue
         kill -0 "$_pid" 2>/dev/null || continue
         kill -INT "$_pid" 2>/dev/null || true
@@ -52,7 +56,12 @@ cleanup() {
         kill -0 "$_pid" 2>/dev/null && kill -KILL "$_pid" 2>/dev/null || true
         wait "$_pid" 2>/dev/null || true
     done
-    rm -f "$FAKE_FILE" "$TMPOUT" "$TMPOUT_C" "$TMPOUT_D" "$FAKE_FILE_D" 2>/dev/null || true
+    rm -f "$FAKE_FILE" "$TMPOUT" "$TMPOUT_C" "$TMPOUT_D" "$FAKE_FILE_D" "$TMPOUT_E" 2>/dev/null || true
+    [[ -n "${OW_INJECT_TMP:-}" ]] && rm -rf "$OW_INJECT_TMP" || true
+    [[ -n "${OW_RECOMMIT_TMP:-}" ]] && rm -rf "$OW_RECOMMIT_TMP" || true
+    [[ -n "${OW_EMPTY_TMP:-}" ]] && rm -rf "$OW_EMPTY_TMP" || true
+    [[ -n "${OW_NORESEED_TMP:-}" ]] && rm -rf "$OW_NORESEED_TMP" || true
+    [[ -n "${NR_STAGED_COPIES:-}" ]] && rm -rf "$NR_STAGED_COPIES" || true
 }
 trap cleanup EXIT
 
@@ -60,7 +69,8 @@ trap cleanup EXIT
 printf '0,0,1920,1080,2.0,1\n1920,0,1920,1080,2.0,2\n' > "$FAKE_FILE"
 
 # FIX 6: unset test/dev env vars so they cannot contaminate the fake-mode gate
-OW_FAKE_SCREENS_FILE="$FAKE_FILE" \
+OW_INJECT_TMP="$(mktemp -d)"
+OW_FAKE_SCREENS_FILE="$FAKE_FILE" OW_APP_SUPPORT_DIR="$OW_INJECT_TMP" \
     env -u OW_SELFTEST -u OW_REBUILD_TEST -u OW_WEBSPIKE -u OW_SPIKE -u WALLPAPER_WEB_DIR "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[inject] PID=$PID"
@@ -239,8 +249,9 @@ echo "[real-recommit] Running OW_REBUILD_TEST=1 forced recommit test..."
 TMPOUT_C="$(mktemp)"
 
 # FIX 6: unset fake/selftest env vars; do NOT set OW_FAKE_SCREENS_FILE
+OW_RECOMMIT_TMP="$(mktemp -d)"
 env -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_WEBSPIKE -u OW_SPIKE \
-    OW_REBUILD_TEST=1 \
+    OW_REBUILD_TEST=1 OW_APP_SUPPORT_DIR="$OW_RECOMMIT_TMP" \
     WALLPAPER_WEB_DIR="$REPO_ROOT/Sources/OnlyWallpapers/web" \
     "$BIN" >"$TMPOUT_C" 2>&1 &
 PID_C=$!
@@ -435,7 +446,8 @@ TMPOUT_D="$(mktemp)"
 
 # Start with a single non-empty screen so gen=0 commit has new=1
 printf '0,0,1920,1080,2.0,1\n' > "$FAKE_FILE_D"
-OW_FAKE_SCREENS_FILE="$FAKE_FILE_D" \
+OW_EMPTY_TMP="$(mktemp -d)"
+OW_FAKE_SCREENS_FILE="$FAKE_FILE_D" OW_APP_SUPPORT_DIR="$OW_EMPTY_TMP" \
     env -u OW_SELFTEST -u OW_REBUILD_TEST -u OW_WEBSPIKE -u OW_SPIKE -u WALLPAPER_WEB_DIR "$BIN" >"$TMPOUT_D" 2>&1 &
 PID_D=$!
 echo "[empty-confirm] PID_D=$PID_D"
@@ -518,6 +530,111 @@ rm -f "$FAKE_FILE_D" "$TMPOUT_D"
 FAKE_FILE_D=""
 TMPOUT_D=""
 echo "[empty-confirm] clean exit confirmed"
+
+# --- Part E: no-reseed-on-rebuild (FIX 7) ---
+# Verifies that performCommit / forceRecommit do NOT trigger seedWebDirIfNeeded again.
+# Seeding there would rewrite live code files under N running views on every hot-plug rebuild.
+echo "[no-reseed] Running no-reseed-on-rebuild check (app-storage mode, OW_REBUILD_TEST=1)..."
+
+TMPOUT_E="$(mktemp)"
+OW_NORESEED_TMP="$(mktemp -d)"
+
+# Launch with app storage (no WALLPAPER_WEB_DIR) and forced-recommit enabled.
+env -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_WEBSPIKE -u OW_SPIKE -u WALLPAPER_WEB_DIR \
+    OW_REBUILD_TEST=1 OW_APP_SUPPORT_DIR="$OW_NORESEED_TMP" \
+    "$BIN" >"$TMPOUT_E" 2>&1 &
+PID_E=$!
+echo "[no-reseed] PID_E=$PID_E"
+
+# Wait for initial gen=0 rebuild
+NR_READY=0
+for i in $(seq 1 50); do
+    if ! kill -0 "$PID_E" 2>/dev/null; then
+        echo "FAIL: [no-reseed] process exited before READY"
+        cat "$TMPOUT_E" || true
+        exit 1
+    fi
+    if grep -q 'ONLYWALLPAPERS_REBUILD gen=0 reason=initial' "$TMPOUT_E" 2>/dev/null; then NR_READY=1; break; fi
+    sleep 0.1
+done
+if [[ $NR_READY -ne 1 ]]; then
+    echo "FAIL: [no-reseed] initial REBUILD gen=0 never appeared"
+    cat "$TMPOUT_E" || true
+    exit 1
+fi
+
+# Confirm initial seed ran with reseeded=true
+if ! grep -q 'ONLYWALLPAPERS_SEED.*reseeded=true' "$TMPOUT_E" 2>/dev/null; then
+    echo "FAIL: [no-reseed] expected ONLYWALLPAPERS_SEED reseeded=true on first launch"
+    cat "$TMPOUT_E" || true
+    exit 1
+fi
+echo "[no-reseed] initial seed reseeded=true confirmed"
+
+# Capture pre-rebuild copies of the seeded code files for byte comparison
+NR_STAGED_COPIES="$(mktemp -d)"
+for _name in index.html style.css wallpaper.js; do
+    _src="$OW_NORESEED_TMP/web/$_name"
+    if [[ ! -f "$_src" ]]; then
+        echo "FAIL: [no-reseed] seeded file missing: $_src"
+        cat "$TMPOUT_E" || true
+        exit 1
+    fi
+    cp "$_src" "$NR_STAGED_COPIES/$_name"
+done
+echo "[no-reseed] pre-rebuild copies captured"
+
+# Trigger forced recommit via SIGUSR1
+kill -USR1 "$PID_E" 2>/dev/null || true
+
+# Wait for gen=1 reason=forced
+NR_FORCED=0
+for i in $(seq 1 60); do
+    if grep -q 'ONLYWALLPAPERS_REBUILD gen=1 reason=forced' "$TMPOUT_E" 2>/dev/null; then NR_FORCED=1; break; fi
+    sleep 0.1
+done
+if [[ $NR_FORCED -ne 1 ]]; then
+    echo "FAIL: [no-reseed] REBUILD gen=1 reason=forced never appeared"
+    cat "$TMPOUT_E" || true
+    exit 1
+fi
+echo "[no-reseed] forced recommit gen=1 confirmed"
+
+# Assert no second ONLYWALLPAPERS_SEED reseeded=true appeared after the initial
+SEED_LINE_COUNT="$(grep -c 'ONLYWALLPAPERS_SEED' "$TMPOUT_E" 2>/dev/null || true)"
+if [[ "$SEED_LINE_COUNT" -ne 1 ]]; then
+    echo "FAIL: [no-reseed] expected exactly 1 ONLYWALLPAPERS_SEED line total (initial seed only). A seed logged as reseeded=false still fails this gate. Found $SEED_LINE_COUNT:"
+    grep 'ONLYWALLPAPERS_SEED' "$TMPOUT_E" || true
+    exit 1
+fi
+echo "[no-reseed] PASS: exactly 1 ONLYWALLPAPERS_SEED line total (no seed on rebuild)"
+
+# Assert code files unchanged (byte-identical to pre-rebuild copies)
+NR_CHANGED=0
+for _name in index.html style.css wallpaper.js; do
+    if ! cmp -s "$NR_STAGED_COPIES/$_name" "$OW_NORESEED_TMP/web/$_name"; then
+        echo "FAIL: [no-reseed] $_name changed across rebuild"
+        NR_CHANGED=1
+    fi
+done
+if [[ $NR_CHANGED -ne 0 ]]; then
+    cat "$TMPOUT_E" || true
+    exit 1
+fi
+echo "[no-reseed] PASS: code files byte-identical before and after rebuild"
+
+# Clean exit
+kill -INT "$PID_E"
+NR_GONE=0
+for i in $(seq 1 20); do
+    sleep 0.05
+    if ! kill -0 "$PID_E" 2>/dev/null; then NR_GONE=1; break; fi
+done
+wait "$PID_E" 2>/dev/null || true
+PID_E=""
+rm -f "$TMPOUT_E"
+TMPOUT_E=""
+echo "[no-reseed] clean exit confirmed"
 
 echo ""
 echo "=== PASS: all rebuild checks passed ==="

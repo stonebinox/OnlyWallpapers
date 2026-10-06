@@ -11,7 +11,8 @@ subclass used as the WallpaperWindow content view, loading the local page via
 muted video fills the window and starts on its own, with a black fallback. The slice
 positioning (ow-blz.2) is in place: the one video is sliced across all displays via
 injected per-screen geometry and `left/top` positioning of `#stage`. The asset-dir
-resolution (ow-94b.3) is wired: `WALLPAPER_WEB_DIR` override else the `Bundle.module`
+resolution (ow-94b.3 + ow-aqx.2) is wired: `WALLPAPER_WEB_DIR`, else a seeded
+app-storage web dir (set via the "Choose video..." menu), else the `Bundle.module`
 bundled copy. Still planned: mood logic (Epic D).
 
 ## Files
@@ -79,9 +80,12 @@ ow-blz.5.
 ## Live Editing (ow-94b.3, done)
 Point `WALLPAPER_WEB_DIR` at a web folder (absolute path) and edits show on the next
 launch without rebuilding the Swift package (there is no file watcher). With the var
-unset, the app loads the copy bundled into the build via `Bundle.module`
-(`Package.swift` ships `web/` as `resources: [.copy("web")]`). A set-but-invalid
-override fails fast (`exit(1)`) rather than silently falling back. See
+unset, the app loads a seeded writable copy in
+`~/Library/Application Support/OnlyWallpapers/web/` (ow-aqx.2; seeded from the bundle,
+which is where the "Choose video..." picker writes), falling back to the
+`Bundle.module` bundled copy if app storage is unwritable (`Package.swift` ships `web/`
+as `resources: [.copy("web")]`). A set-but-invalid override fails fast (`exit(1)`)
+rather than silently falling back. See
 swift-shell/overview.md for the resolver contract and log grammar.
 
 ## Assets

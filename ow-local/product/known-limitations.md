@@ -30,19 +30,22 @@ Trade-offs we have accepted, with the reason. Revisit these as the project grows
   because geometry is expressed in points (CSS px map to points); verify visually.
 
 ## Platform
-- **No persistence or settings UI.** Which video, moods, and options are set in the
-  web layer and env vars for now.
+- **Minimal settings UI.** The menu-bar menu now has a "Choose video..." item that
+  sets and persists the wallpaper video (ow-aqx.2); moods and other options are still
+  set in the web layer for now (a fuller controls surface is ow-aqx.7).
 - **Unsigned, local, arm64 only (ow-aad.5).** The packaged `OnlyWallpapers.app` is
   built locally and unsigned (App Store distribution and Developer ID signing are
   non-goals). A locally built, non-downloaded app has no quarantine so it runs without
   a Gatekeeper prompt; a copy that is zipped or AirDropped needs
   `xattr -dr com.apple.quarantine`. The binary is arm64 (Apple Silicon); no universal
   build.
-- **Setting a video in the installed app is clunky.** A double-clicked `.app` gets no
-  shell environment, so `WALLPAPER_WEB_DIR` only helps when launched from a terminal.
-  In the installed app you drop `bg.mp4` inside the bundle
-  (`OnlyWallpapers.app/OnlyWallpapers_OnlyWallpapers.bundle/web/assets/`) or re-run the
-  package script. A friendlier fixed location is deferred to ow-aqx.2.
+- **Setting a video (ow-aqx.2, done).** The menu-bar "Choose video..." item copies the
+  picked `.mp4` into a single slot in app storage
+  (`~/Library/Application Support/OnlyWallpapers/web/assets/bg.mp4`, overwritten each
+  pick), persists it, and plays it immediately; the original can be deleted. v1 accepts
+  MPEG-4 only (a `.mov` on the mp4 slot paints black), and the on-screen swap is an
+  in-place `<video>` source change (a brief transition, no crossfade yet). A `.mov`/
+  transcode path and a "Reset to default" are future niceties.
 - **Launch at login not wired up.** Manual run for now (ow-aad.3). The menu-bar Quit
   item (ow-aad.5) is the only in-app way to stop it.
 - **Autoplay quirk.** The `<video>` must be `muted` + `playsinline` with a JS

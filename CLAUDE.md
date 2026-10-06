@@ -125,8 +125,9 @@ OnlyWallpapers/
 ├── Sources/OnlyWallpapers/
 │   ├── main.swift  AppDelegate.swift
 │   ├── WallpaperController.swift     # NSScreen union -> per-screen slice geometry
-│   ├── WebDirectoryResolver.swift    # WALLPAPER_WEB_DIR else Bundle.module (ow-94b.3)
-│   ├── StatusItemController.swift    # menu-bar icon + Quit (ow-aad.5)
+│   ├── WebDirectoryResolver.swift    # WALLPAPER_WEB_DIR / app-storage / Bundle.module (ow-94b.3, ow-aqx.2)
+│   ├── AppStorageManager.swift       # seed writable web dir in ~/Library App Support (ow-aqx.2)
+│   ├── StatusItemController.swift    # menu-bar icon + Quit + Choose video (ow-aad.5, ow-aqx.2)
 │   ├── WallpaperWindow.swift         # borderless desktop-layer, click-through window
 │   ├── WebWallpaperView.swift        # WKWebView (opaque base + black fallback, local file access)
 │   └── web/                          # render layer; hot-editable via WALLPAPER_WEB_DIR

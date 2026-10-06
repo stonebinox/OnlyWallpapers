@@ -34,3 +34,20 @@
   video.addEventListener("ended", tryPlay);
   tryPlay();
 })();
+
+window.__setWallpaperVideo = function(src) {
+  var v = document.getElementById("bg");
+  if (!v) return;
+  while (v.firstChild) { v.removeChild(v.firstChild); }
+  v.removeAttribute("src");
+  v.src = src;
+  window.__lastVideoApplied = { src: '', durationMs: 0 };
+  v.load();
+  v.addEventListener('loadedmetadata', function onMeta() {
+    v.removeEventListener('loadedmetadata', onMeta);
+    window.__lastVideoApplied = { src: v.currentSrc, durationMs: Math.round((v.duration||0)*1000) };
+  });
+  v.muted = true;
+  var p = v.play();
+  if (p && p.catch) { p.catch(function(){}); }
+};

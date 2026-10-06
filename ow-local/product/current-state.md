@@ -79,10 +79,12 @@ Last updated: 2026-10-06
 - ow-94b.3 (done): web asset resolution. `WebDirectoryResolver.resolve()` (MainActor)
   picks the web dir: `WALLPAPER_WEB_DIR` env override (tilde-expanded, must be absolute
   and hold `index.html`) else the copy bundled via `Bundle.module` (`Package.swift`
-  ships `web/` as `resources: [.copy("web")]`). Logs
-  `ONLYWALLPAPERS_WEB_RESOLVE status=ok|fail source=env|bundle ...`; a set-but-invalid
+  ships `web/` as `resources: [.copy("web")]`). (ow-aqx.2 later inserted a seeded
+  app-storage tier between env and bundle, so the DEFAULT source is now `appstore`.)
+  Logs `ONLYWALLPAPERS_WEB_RESOLVE status=ok|fail source=env|appstore|bundle ...`; a set-but-invalid
   override `exit(1)`s rather than silently falling back. `#filePath` is gone. Gates:
-  `smoke-run.sh` asserts the default run resolves `source=bundle`; `webdir-check.sh`
+  `smoke-run.sh` asserted the default run resolved `source=bundle` (superseded by
+  ow-aqx.2: the default is now `source=appstore`); `webdir-check.sh`
   (requires a display) asserts, with exact-token and per-screen load checks,
   bundle-consumed and override-ok (every `WebWallpaperView` loaded the resolved dir,
   one `loaded=ok` per screen, no `loaded=fail`), plus override-fail and
@@ -95,12 +97,12 @@ Last updated: 2026-10-06
   Contents/Resources would not be found). `AppDelegate` now guards
   `setActivationPolicy(.accessory)` (the `.app` sets it via `LSUIElement` pre-launch).
   Gate `scripts/package-check.sh` copies the `.app` to a temp dir outside the repo,
-  runs it with cwd outside the tree, and proves it resolves `source=bundle` from
-  INSIDE its own bundle (not `.build`), with `policy=accessory`, the status item, and
+  runs it with cwd outside the tree, and proves it seeds from its OWN bundle (not
+  `.build`) and resolves `source=appstore` from a temp app-storage (it asserted
+  `source=bundle` before ow-aqx.2), with `policy=accessory`, the status item, and
   per-screen `loaded=ok`, then a clean SIGINT and no orphan process. Unsigned/local,
-  arm64 only. To set a video in the installed app: drop `bg.mp4` into the bundle or
-  re-run the package script (a friendlier path is ow-aqx.2). Launch at login is
-  ow-aad.3.
+  arm64 only. To set a video in the installed app: use the menu-bar "Choose video..."
+  item (ow-aqx.2). Launch at login is ow-aad.3.
 - ow-blz.3 (done): the wallpaper rebuilds IN PLACE when displays are attached,
   detached, or rearranged (no relaunch; the in-place video keeps playing, so it is
   designed for no black flash, to be confirmed visually in Phase 5 on real hardware).
@@ -117,14 +119,30 @@ Last updated: 2026-10-06
   (3-screen T-shape math), a real-display forced re-commit (the applied-oracle
   `left==-offX` re-validated on real glass), and the empty-confirm cases. The real
   hot-plug seamlessness on a physical T-arrangement is a manual Phase 5 check.
+- ow-aqx.2 (video picker, done): a menu-bar "Choose video..." item sets and persists the
+  wallpaper video. On launch `AppStorageManager` seeds a writable web dir in
+  `~/Library/Application Support/OnlyWallpapers/web/` (code re-seeded on a content-hash
+  change, self-healing; the video slot preserved). The resolver tiers are now
+  `WALLPAPER_WEB_DIR` -> app-storage (`source=appstore`) -> bundle FALLBACK (so an
+  unwritable Application Support still wallpapers, no black). The picker (enabled only
+  when source=appstore) opens an NSOpenPanel (MP4 only in v1), copies the pick off-main
+  to a single slot `web/assets/bg.mp4` (atomic replace; first-install handled), and
+  does an IN-PLACE `<video>` source swap across all screens (preserving ow-blz.3
+  geometry). Gates prove it: default resolves source=appstore (code byte-identical to
+  bundle), a media-switch gate proves the NEW clip loaded BY DURATION (6s -> 3s), plus
+  self-heal, no-reseed-on-rebuild, picker-enabled-per-source, and bundle-fallback. The
+  NSOpenPanel focus on an accessory app and the on-screen swap are a manual Phase 5
+  check. Was blocked on diagnosing a Codex hang (its MCP servers + long prompts; fixed
+  in CLAUDE.md with `-c mcp_servers={}` + lean prompts).
 
 ### Next Step
-ow-aad.3 (launch at login) makes the packaged `.app` auto-start, and ow-aad.1 verifies
-the lock/unlock, sleep/wake, screensaver, and Spaces behavior on the real machine
-(the perfect moment is while a live instance is running). ow-blz.4 (geometry unit
-tests, now partly covered by the ow-blz.3 OW_SELFTEST cases) and ow-94b.4 (a real
-sample video). ow-mbw.4 adds the fuller window-config run check; ow-blz.5 handles slice
-sync across pause/resume. Retiring the env-gated webspike A/B is a deferred cleanup.
+Phase 5 for ow-aqx.2: click "Choose video..." on the running app (panel focus + live
+swap). ow-aad.3 (launch at login) makes the packaged `.app` auto-start (reboot test
+deferred by the user). ow-blz.4 (geometry unit tests, now partly covered by the
+ow-blz.3 OW_SELFTEST cases); ow-94b.4 (a real sample video); ow-aqx.6/aqx.7 (framing +
+the fuller menu-bar controls); ow-aqx.5 (bounce); ow-aqx.1 (moods). ow-mbw.4 adds the
+fuller window-config run check; ow-blz.5 handles slice sync. Retiring the env-gated
+webspike A/B is a deferred cleanup.
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

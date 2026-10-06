@@ -87,6 +87,8 @@ echo "[bin] Binary path: $BIN"
 
 # --- Launch and poll ---
 TMPOUT="$(mktemp)"
+OW_SUPPORT_TMP=""
+# NON-BLOCKING 1: combine both cleanup actions in one trap so a failure still kills PID.
 cleanup() {
     if [[ -n "${PID:-}" ]]; then
         if kill -0 "$PID" 2>/dev/null; then
@@ -99,12 +101,14 @@ cleanup() {
         wait "$PID" 2>/dev/null || true
     fi
     rm -f "$TMPOUT"
+    [[ -n "$OW_SUPPORT_TMP" ]] && rm -rf "$OW_SUPPORT_TMP" || true
 }
 trap cleanup EXIT
 
 # --- Step 3: launch binary in background ---
 echo "[launch] Starting $BIN..."
-env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$BIN" >"$TMPOUT" 2>&1 &
+OW_SUPPORT_TMP="$(mktemp -d)"
+OW_APP_SUPPORT_DIR="$OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[launch] PID: $PID"
 
@@ -157,8 +161,8 @@ if ! kill -0 "$PID" 2>/dev/null; then
 fi
 echo "[alive] PASS: process still alive after 2s"
 
-# --- Step 6b: verify web dir resolved from bundle (no env override) ---
-echo "[resolve] Checking ONLYWALLPAPERS_WEB_RESOLVE status=ok source=bundle..."
+# --- Step 6b: verify web dir resolved from appstore (no env override) ---
+echo "[resolve] Checking ONLYWALLPAPERS_WEB_RESOLVE status=ok source=appstore..."
 RESOLVE_LINE="$(grep 'ONLYWALLPAPERS_WEB_RESOLVE' "$TMPOUT" | head -1 || true)"
 if [ -z "$RESOLVE_LINE" ]; then
     echo "FAIL: ONLYWALLPAPERS_WEB_RESOLVE line never appeared"
@@ -166,8 +170,8 @@ if [ -z "$RESOLVE_LINE" ]; then
     cat "$TMPOUT" || true
     exit 1
 fi
-if ! echo "$RESOLVE_LINE" | grep -Eq 'status=ok source=bundle( |$)'; then
-    echo "FAIL: expected status=ok source=bundle, got: $RESOLVE_LINE"
+if ! echo "$RESOLVE_LINE" | grep -Eq 'status=ok source=appstore( |$)'; then
+    echo "FAIL: expected status=ok source=appstore, got: $RESOLVE_LINE"
     echo "--- output ---"
     cat "$TMPOUT" || true
     exit 1

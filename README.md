@@ -17,8 +17,8 @@ rendering.
   ```bash
   WALLPAPER_WEB_DIR=$PWD/Sources/OnlyWallpapers/web swift run OnlyWallpapers
   ```
-- Production runs with the variable unset. The bundled web layer (copied at build time via `resources: [.copy("web")]`) is used automatically.
-- Drop your clip at `Sources/OnlyWallpapers/web/assets/bg.mp4` and rebuild.
+- Production runs with the variable unset. On launch the app seeds a writable copy of the web layer into `~/Library/Application Support/OnlyWallpapers/web/` from the bundle (code files re-seeded when the bundle changes; your chosen video preserved), and loads from there. If app storage is unwritable it falls back to the bundled copy.
+- Set your video from the menu-bar icon ("Choose video...", see below). For dev, drop a clip at `Sources/OnlyWallpapers/web/assets/bg.mp4` and use `WALLPAPER_WEB_DIR`.
 - Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/package-check.sh` (standalone .app), `scripts/rebuild-check.sh` (display hot-plug rebuild), `scripts/video-check.sh` (video asset check).
 
 ## Build and install the app
@@ -43,11 +43,11 @@ xattr -dr com.apple.quarantine /Applications/OnlyWallpapers.app
 Once running, the app appears as a small icon in the menu bar. Click it and
 choose "Quit OnlyWallpapers" to stop it.
 
-To use your own video: drop `bg.mp4` into
-`OnlyWallpapers.app/OnlyWallpapers_OnlyWallpapers.bundle/web/assets/bg.mp4`
-inside the bundle, or place your clip at
-`Sources/OnlyWallpapers/web/assets/bg.mp4` in the source tree and re-run
-`scripts/package-app.sh`.
+To set your own video: click the menu-bar icon and choose "Choose video...",
+then pick an `.mp4` file (MPEG-4/H.264). The app copies it into its own storage
+(`~/Library/Application Support/OnlyWallpapers/web/assets/bg.mp4`, a single slot that
+is overwritten on each new pick) and plays it immediately. The choice persists across
+launches and reboots, and you can delete the original file afterward.
 
 Note: arm64 (Apple Silicon) only; unsigned, for local personal use.
 

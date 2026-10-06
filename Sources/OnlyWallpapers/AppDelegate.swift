@@ -2,15 +2,10 @@ import AppKit
 import Darwin
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    // Retained for the process lifetime; SIGINT terminates the app cleanly.
     private var sigintSource: DispatchSourceSignal?
-
-    // Retained for the process lifetime.
     private var wallpaperController: WallpaperController?
     private var sigUSR1Source: DispatchSourceSignal?
-
-    // WebSpike: activity token and controllers kept alive for the process lifetime.
-    // AnyObject avoids importing WebKit in this file.
+    private var sigUSR2Source: DispatchSourceSignal?
     private var spikeActivity: NSObjectProtocol?
     private var webSpikeControllers: [AnyObject] = []
     private var statusItemController: StatusItemController?
@@ -21,8 +16,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             precondition(ok, "failed to set .accessory activation policy")
         }
 
-        // Install SIGINT handler before announcing readiness so no window exists
-        // where the default disposition (exit 130) can fire.
         signal(SIGINT, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         src.setEventHandler { NSApp.terminate(nil) }
@@ -33,8 +26,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Sample policy after AppKit completes its launch sequence so the value
-        // reflects the final runtime state, not the in-flight state.
         let policy = NSApp.activationPolicy() == .accessory ? "accessory" : "OTHER:\(NSApp.activationPolicy().rawValue)"
         let pid = ProcessInfo.processInfo.processIdentifier
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_READY policy=\(policy) pid=\(pid)\n".utf8))
@@ -83,7 +74,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } else {
-            // Default production path: WallpaperController spans all screens.
+            let wallpaperWebDir = env["WALLPAPER_WEB_DIR"]
+            if wallpaperWebDir == nil || (wallpaperWebDir?.isEmpty == true) {
+                if let bundleIdx = Bundle.module.url(forResource: "index", withExtension: "html", subdirectory: "web") {
+                    let bundleWebDir = bundleIdx.deletingLastPathComponent()
+                    AppStorageManager.seedWebDirIfNeeded(fromBundleWebDir: bundleWebDir)
+                } else {
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SEED status=fail source=bundle reason=no-bundle-index\n".utf8))
+                    AppStorageManager.seedFailed = true
+                }
+            }
+
+            // Resolve once to get the actual source for picker state.
+            // seedFailed=false is not sufficient: a malformed tree (dir named wallpaper.js,
+            // unreadable file) passes seeding but the resolver falls back to bundle.
+            let resolved = WebDirectoryResolver.resolve()
+            let pickerEnabled: Bool
+            if resolved.source == "appstore" {
+                let assetsDir = AppStorageManager.appSupportRoot()
+                    .appendingPathComponent("web")
+                    .appendingPathComponent("assets")
+                pickerEnabled = FileManager.default.isWritableFile(atPath: assetsDir.path)
+            } else {
+                pickerEnabled = false
+            }
+            let pickerSource = resolved.source
+
             let controller = WallpaperController()
             controller.initialBuild()
             self.wallpaperController = controller
@@ -99,8 +115,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 usr1Src.resume()
                 self.sigUSR1Source = usr1Src
             } else if env["OW_REBUILD_TEST"] == "1" {
-                // FIX 3: test-gated forced recommit path. SIGUSR1 triggers a real-screen commit,
-                // bypassing the reducer no-op check. Never installed in normal production launches.
                 signal(SIGUSR1, SIG_IGN)
                 let usr1Src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
                 usr1Src.setEventHandler { [weak controller] in
@@ -110,7 +124,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.sigUSR1Source = usr1Src
             }
 
-            statusItemController = StatusItemController()
+            if env["OW_VIDEO_TEST"] == "1" {
+                signal(SIGUSR2, SIG_IGN)
+                let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+                // OW_VIDEO_TEST_SRC_FILE: path to a file whose content is the video path to copy.
+                // Read at signal time so the gate can update the file between two SIGUSR2 sends.
+                let testSrcFilePath = env["OW_VIDEO_TEST_SRC_FILE"]
+                usr2Src.setEventHandler { [weak controller] in
+                    if let sfp = testSrcFilePath, !sfp.isEmpty,
+                       let srcPath = try? String(contentsOfFile: sfp, encoding: .utf8)
+                           .trimmingCharacters(in: .whitespacesAndNewlines),
+                       !srcPath.isEmpty {
+                        let destDir = AppStorageManager.appSupportRoot()
+                            .appendingPathComponent("web")
+                            .appendingPathComponent("assets")
+                        let srcURL = URL(fileURLWithPath: srcPath)
+                        Task.detached(priority: .userInitiated) {
+                            let result = copyVideoFile(from: srcURL, toAssetsDir: destDir)
+                            await MainActor.run {
+                                switch result {
+                                case .success:
+                                    controller?.reloadVideo()
+                                case .failure(let err):
+                                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_VIDEO copy-hook=fail error=\(err.localizedDescription)\n".utf8))
+                                }
+                            }
+                        }
+                    } else {
+                        controller?.reloadVideo()
+                    }
+                }
+                usr2Src.resume()
+                self.sigUSR2Source = usr2Src
+            }
+
+            let statusItem = StatusItemController(pickerEnabled: pickerEnabled, source: pickerSource)
+            statusItem.onChooseVideo = { [weak controller] in
+                controller?.reloadVideo()
+            }
+            statusItemController = statusItem
         }
     }
 }

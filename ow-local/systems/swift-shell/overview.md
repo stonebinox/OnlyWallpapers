@@ -27,8 +27,9 @@ slice geometry. The per-screen slice geometry is now injected into the web layer
   `offY = union.maxY - screen.maxY`, points, union seeded from `CGRect.null`), creates
   and owns one `WallpaperWindow` per screen (each window stays at `screen.frame`; the
   slice `offX/offY` are data only, never applied to any AppKit rect), passes the web
-  dir resolved by `WebDirectoryResolver` (ow-94b.3: `WALLPAPER_WEB_DIR` env override,
-  else the `Bundle.module` bundled copy), and logs the geometry. Records are stored by `CGDirectDisplayID` (not
+  dir resolved by `WebDirectoryResolver` (ow-94b.3 + ow-aqx.2: `WALLPAPER_WEB_DIR`,
+  else the seeded app-storage copy, else the `Bundle.module` bundle), and logs the
+  geometry. Records are stored by `CGDirectDisplayID` (not
   `NSScreen`). Injecting the geometry into the web layer (via a document-start WKUserScript) is done (ow-blz.2). It also rebuilds IN PLACE on display changes (ow-blz.3, done): it observes `didChangeScreenParametersNotification` plus wake, coalesces (a debounce plus an empty-confirm so a transient zero-screen snapshot during sleep/wake cannot blank the desktop), decides via a pure generation-guarded reducer, diffs by `displayID`, and updates survivors (`setFrame` plus a runtime `window.__applyWallpaperGeometry` left/top re-apply, so the video keeps playing, designed for no black flash and to be confirmed on real hardware in Phase 5) while only creating or closing windows for added or removed displays. The decision logic (reducer, `arrangementChanged`, `computeLayout`) is pure and unit-tested via `OW_SELFTEST`.
 - **WallpaperWindow** (ow-mbw.3, done): a `final NSWindow` subclass, borderless at
   the desktop level, content-agnostic (holds whatever content view it is given),
@@ -75,22 +76,31 @@ encodes the Displays arrangement. For each screen:
 Pass `{stageW, stageH, offX, offY: offYTop}` to the web layer. Geometry is in
 points, which map 1:1 to CSS px, so Retina is handled by the backing scale.
 
-## Web Asset Resolution (ow-94b.3, done)
-`WebDirectoryResolver.resolve()` (runs on the MainActor; `computeLayout` stays
-nonisolated) picks the web dir: `WALLPAPER_WEB_DIR` wins if set (live editing without
-a rebuild; the value is tilde-expanded and must be absolute and contain `index.html`),
-otherwise the copy bundled into the build via `Bundle.module` (`Package.swift` ships
-`web/` as `resources: [.copy("web")]`). It logs a dedicated line
-`ONLYWALLPAPERS_WEB_RESOLVE status=ok source=env|bundle dir=<abs>`. A set-but-invalid
-override does NOT fall back: it logs `status=fail ... reason=not-absolute|no-index`
-and `exit(1)` before any window is created (silent fallback would hide a typo).
-Loading still uses `loadFileURL(_:allowingReadAccessTo:)` scoped to the web directory
-(since ow-94b.1). A wholly-missing resource bundle aborts inside the synthesized
-`Bundle.module` accessor; ensuring the bundle ships beside the binary is ow-aad.5's
-job. NOTE: the env-gated webspike path in `AppDelegate` reads `WALLPAPER_WEB_DIR`
-under its OWN older contract (it also requires `bg.mp4`, and silently falls back to
-`.build/webspike`); the fail-fast resolution above applies only to the default,
-non-webspike path.
+## Web Asset Resolution (ow-94b.3 + ow-aqx.2, done)
+`AppStorageManager.seedWebDirIfNeeded(...)` runs ONCE at launch (from
+`applicationDidFinishLaunching`, BEFORE `initialBuild()`; never from `resolve()` or
+`performCommit`, which run on every hot-plug rebuild). It seeds a WRITABLE web dir at
+`~/Library/Application Support/OnlyWallpapers/web/` (override root via
+`OW_APP_SUPPORT_DIR` for tests): the three code files (`index.html`, `style.css`,
+`wallpaper.js`) are copied from the bundle when missing or when a content-hash marker
+differs (self-healing; the marker is written LAST so an interrupted seed re-seeds next
+launch), while `assets/` (the user's chosen video) is preserved. Leftover `*.partial`
+is swept (no storage growth).
+`WebDirectoryResolver.resolve()` (MainActor; `computeLayout` stays nonisolated) then
+picks the web dir in tiers: (1) `WALLPAPER_WEB_DIR` if set (dev live-edit; tilde
+expanded, absolute, must hold `index.html`, fail-fast + `exit(1)` on a bad override,
+no silent fallback). (2) the seeded app-storage web dir if COMPLETE (all three code
+files are regular readable files). (3) the `Bundle.module` bundled copy as a FALLBACK
+if the seed failed or the app-storage tree is incomplete (so an unwritable Application
+Support still wallpapers instead of going black). Logs
+`ONLYWALLPAPERS_WEB_RESOLVE status=ok source=env|appstore|bundle dir=<abs>`. Loading
+uses `loadFileURL(_:allowingReadAccessTo:)` scoped to that one dir (video + code are
+co-located in app storage, which is why the whole web dir moved there: a single read
+subtree cannot cover both `/Applications` and `~/Library`). The "Choose video..."
+picker (StatusItemController) writes the single slot `web/assets/bg.mp4` in app storage
+and is enabled only when the resolved source is `appstore`. NOTE: the env-gated
+webspike path in `AppDelegate` keeps its OWN older `WALLPAPER_WEB_DIR` contract; the
+tiered resolution above applies only to the default, non-webspike path.
 
 ## Packaging (ow-aad.5, done)
 `scripts/package-app.sh` produces a standalone, local, UNSIGNED `dist/OnlyWallpapers.app`:
@@ -103,9 +113,11 @@ via `Bundle.main.bundleURL.appendingPathComponent("OnlyWallpapers_OnlyWallpapers
 and for a `.app` `Bundle.main.bundleURL` is the `.app` root (verified from the generated
 `resource_bundle_accessor.swift`; it also has a HARDCODED `.build` fallback, so the
 gate must prove the app resolves inside its OWN bundle, not `.build`). `scripts/package-check.sh`
-is the gate: it copies the `.app` to a temp dir outside the repo, runs it with cwd
-outside the tree, and asserts `source=bundle` with the resolved dir INSIDE the temp
-`.app`, plus `policy=accessory`, the status item, and per-screen `loaded=ok`. Unsigned
+is the gate: it copies the `.app` to a temp dir outside the repo, runs it (with
+`OW_APP_SUPPORT_DIR` pointed at a temp) with cwd outside the tree, and asserts the app
+seeds from its OWN bundle (the seed source path is inside the temp `.app`, no `.build`)
+and resolves `source=appstore` from the temp app-storage, plus `policy=accessory`, the
+status item, and per-screen `loaded=ok`. Unsigned
 local builds have no quarantine so they run without a Gatekeeper prompt (an
 `xattr -dr com.apple.quarantine` escape hatch is documented for transferred copies).
 arm64 only; the binary links only the OS Swift runtime (`/usr/lib/swift`), so no dylib

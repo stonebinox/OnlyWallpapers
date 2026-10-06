@@ -211,7 +211,7 @@ final class WallpaperController {
         let gen = commitGen
         commitGen += 1
 
-        let webDir = isFakeMode ? nil : Optional(WebDirectoryResolver.resolve())
+        let webDir = isFakeMode ? nil : Optional(WebDirectoryResolver.resolve().url)
         let oldCount = records.count
         let newCount = descriptors.count
 
@@ -309,5 +309,55 @@ final class WallpaperController {
                 rec.displayID, gen)
             FileHandle.standardOutput.write(Data(line.utf8))
         }
+    }
+
+    private var reloadToken: Int = 0
+
+    private func pollVideoApplied(view: WebWallpaperView, token: Int, winNum: Int, attempt: Int) {
+        view.evaluateJavaScript("window.__lastVideoApplied || {src:'',durationMs:0}") { [weak self, weak view] result, _ in
+            guard let view else { return }
+            let obj = result as? [String: Any]
+            let durMs = (obj?["durationMs"] as? NSNumber)?.intValue ?? 0
+            let src = (obj?["src"] as? String) ?? ""
+            if durMs > 0 || attempt >= 30 {
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_VIDEO applied win=\(winNum) rev=\(token) durationMs=\(durMs) currentSrc=\(src)\n".utf8))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak view] in
+                    guard let view else { return }
+                    view.requestMediaPlaybackState { state in
+                        let ms: String
+                        switch state {
+                        case .none: ms = "none"
+                        case .paused: ms = "paused"
+                        case .suspended: ms = "suspended"
+                        case .playing: ms = "playing"
+                        @unknown default: ms = "unknown"
+                        }
+                        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_VIDEO media win=\(winNum) rev=\(token) state=\(ms)\n".utf8))
+                    }
+                }
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak view] in
+                    guard let self, let view else { return }
+                    self.pollVideoApplied(view: view, token: token, winNum: winNum, attempt: attempt + 1)
+                }
+            }
+        }
+    }
+
+    func reloadVideo() {
+        reloadToken += 1
+        let token = reloadToken
+        var viewCount = 0
+        for rec in records {
+            guard let view = rec.webView else { continue }
+            viewCount += 1
+            let winNum = rec.window?.windowNumber ?? 0
+            let js = "window.__setWallpaperVideo('assets/bg.mp4?rev=\(token)')"
+            view.evaluateJavaScript(js) { [weak self, weak view, token, winNum] _, _ in
+                guard let self, let view else { return }
+                self.pollVideoApplied(view: view, token: token, winNum: winNum, attempt: 0)
+            }
+        }
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_VIDEO reload views=\(viewCount) rev=\(token)\n".utf8))
     }
 }

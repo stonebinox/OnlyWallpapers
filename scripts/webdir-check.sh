@@ -61,7 +61,7 @@ echo "[hygiene] PASS: index.html, style.css, and wallpaper.js all present in $EX
 echo "[bundle-consumed] Launching without WALLPAPER_WEB_DIR (bundle path expected)..."
 TMPOUT_BUNDLE="$(mktemp)"
 
-env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE "$BIN" >"$TMPOUT_BUNDLE" 2>&1 &
+env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$BIN" >"$TMPOUT_BUNDLE" 2>&1 &
 PID_BUNDLE=$!
 
 # Phase 1: poll up to 5s for the resolve line.
@@ -89,7 +89,7 @@ fi
 BUNDLE_WIN_LINE_FOUND=0
 SCREEN_COUNT_BUNDLE=0
 for i in $(seq 1 50); do
-    WIN_LINE_B="$(grep 'ONLYWALLPAPERS_WINDOWS count=' "$TMPOUT_BUNDLE" 2>/dev/null | head -1 || true)"
+    WIN_LINE_B="$(grep 'ONLYWALLPAPERS_WINDOWS count=' "$TMPOUT_BUNDLE" 2>/dev/null | grep 'gen=0' | head -1 || true)"
     if [[ -n "$WIN_LINE_B" ]]; then
         BUNDLE_WIN_LINE_FOUND=1
         SCREEN_COUNT_BUNDLE="$(echo "$WIN_LINE_B" | sed 's/.*count=\([0-9]*\).*/\1/')"
@@ -122,7 +122,7 @@ for i in $(seq 1 100); do
         cat "$TMPOUT_BUNDLE" || true
         exit 1
     fi
-    _cnt="$(grep -c 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT_BUNDLE" 2>/dev/null || true)"
+    _cnt="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT_BUNDLE" 2>/dev/null || true)"
     if [[ "$_cnt" -ge "$SCREEN_COUNT_BUNDLE" ]]; then
         break
     fi
@@ -176,17 +176,17 @@ if [[ "$BUNDLE_DIR_BAD" -ne 0 ]]; then
 fi
 echo "[bundle-consumed] PASS (a): all $BUNDLE_DIR_LINE_COUNT dir= line(s) match expected dir with index_exists=true"
 
-# Assert (b): exactly N loaded=ok lines with distinct win= values; zero loaded=fail.
-BUNDLE_OK_COUNT="$(grep -c 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT_BUNDLE" 2>/dev/null || true)"
+# Assert (b): exactly N loaded=ok gen=0 lines with distinct win= values; zero loaded=fail.
+BUNDLE_OK_COUNT="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT_BUNDLE" 2>/dev/null || true)"
 if [[ "$BUNDLE_OK_COUNT" -ne "$SCREEN_COUNT_BUNDLE" ]]; then
-    echo "FAIL: bundle-consumed: expected $SCREEN_COUNT_BUNDLE loaded=ok lines, found $BUNDLE_OK_COUNT"
+    echo "FAIL: bundle-consumed: expected $SCREEN_COUNT_BUNDLE loaded=ok gen=0 lines, found $BUNDLE_OK_COUNT"
     cat "$TMPOUT_BUNDLE" || true
     exit 1
 fi
-BUNDLE_DISTINCT_WINS="$(grep 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT_BUNDLE" \
+BUNDLE_DISTINCT_WINS="$(grep -E 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT_BUNDLE" \
     | grep -o 'win=[0-9]*' | sort -u | wc -l | tr -d ' ')"
 if [[ "$BUNDLE_DISTINCT_WINS" -ne "$SCREEN_COUNT_BUNDLE" ]]; then
-    echo "FAIL: bundle-consumed: expected $SCREEN_COUNT_BUNDLE distinct win= values in loaded=ok lines, found $BUNDLE_DISTINCT_WINS"
+    echo "FAIL: bundle-consumed: expected $SCREEN_COUNT_BUNDLE distinct win= values in loaded=ok gen=0 lines, found $BUNDLE_DISTINCT_WINS"
     cat "$TMPOUT_BUNDLE" || true
     exit 1
 fi
@@ -196,26 +196,26 @@ if [[ "$BUNDLE_FAIL_COUNT" -ne 0 ]]; then
     cat "$TMPOUT_BUNDLE" || true
     exit 1
 fi
-echo "[bundle-consumed] PASS (b): $SCREEN_COUNT_BUNDLE loaded=ok lines with distinct win= values, no loaded=fail"
+echo "[bundle-consumed] PASS (b): $SCREEN_COUNT_BUNDLE loaded=ok gen=0 lines with distinct win= values, no loaded=fail"
 
-# Assert (c): win= set from loaded=ok lines must equal win= set from SLICE lines.
-BUNDLE_LOADED_WINS="$(grep 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT_BUNDLE" \
+# Assert (c): win= set from loaded=ok gen=0 lines must equal win= set from SLICE gen=0 lines.
+BUNDLE_LOADED_WINS="$(grep -E 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT_BUNDLE" \
     | grep -o 'win=[0-9]*' | sort -u | tr '\n' ' ' | sed 's/ $//')"
-BUNDLE_SLICE_WINS="$(grep 'ONLYWALLPAPERS_SLICE.*win=' "$TMPOUT_BUNDLE" \
+BUNDLE_SLICE_WINS="$(grep 'ONLYWALLPAPERS_SLICE.*gen=0' "$TMPOUT_BUNDLE" \
     | grep -o 'win=[0-9]*' | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$BUNDLE_LOADED_WINS" != "$BUNDLE_SLICE_WINS" ]]; then
-    echo "FAIL: bundle-consumed: win= sets differ. loaded=ok wins: {$BUNDLE_LOADED_WINS} slice wins: {$BUNDLE_SLICE_WINS}"
+    echo "FAIL: bundle-consumed: win= sets differ. loaded=ok gen=0 wins: {$BUNDLE_LOADED_WINS} slice wins: {$BUNDLE_SLICE_WINS}"
     cat "$TMPOUT_BUNDLE" || true
     exit 1
 fi
-echo "[bundle-consumed] PASS (c): loaded=ok win= set equals SLICE win= set: {$BUNDLE_LOADED_WINS}"
+echo "[bundle-consumed] PASS (c): loaded=ok gen=0 win= set equals SLICE gen=0 win= set: {$BUNDLE_LOADED_WINS}"
 
 # --- Check B: OVERRIDE-OK ---
 echo "[override-ok] Launching with WALLPAPER_WEB_DIR set to sources/web dir..."
 OVERRIDE_DIR="$REPO_ROOT/Sources/OnlyWallpapers/web"
 TMPOUT_OK="$(mktemp)"
 
-env -u OW_SPIKE -u OW_WEBSPIKE WALLPAPER_WEB_DIR="$OVERRIDE_DIR" "$BIN" >"$TMPOUT_OK" 2>&1 &
+env -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST WALLPAPER_WEB_DIR="$OVERRIDE_DIR" "$BIN" >"$TMPOUT_OK" 2>&1 &
 PID_OK=$!
 
 # Phase 1: poll up to 5s for the resolve line.
@@ -243,7 +243,7 @@ fi
 WIN_LINE_FOUND=0
 SCREEN_COUNT_OK=0
 for i in $(seq 1 50); do
-    WIN_LINE="$(grep 'ONLYWALLPAPERS_WINDOWS count=' "$TMPOUT_OK" 2>/dev/null | head -1 || true)"
+    WIN_LINE="$(grep 'ONLYWALLPAPERS_WINDOWS count=' "$TMPOUT_OK" 2>/dev/null | grep 'gen=0' | head -1 || true)"
     if [[ -n "$WIN_LINE" ]]; then
         WIN_LINE_FOUND=1
         SCREEN_COUNT_OK="$(echo "$WIN_LINE" | sed 's/.*count=\([0-9]*\).*/\1/')"
@@ -276,7 +276,7 @@ for i in $(seq 1 100); do
         cat "$TMPOUT_OK" || true
         exit 1
     fi
-    _cnt="$(grep -c 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT_OK" 2>/dev/null || true)"
+    _cnt="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT_OK" 2>/dev/null || true)"
     if [[ "$_cnt" -ge "$SCREEN_COUNT_OK" ]]; then
         break
     fi
@@ -327,17 +327,17 @@ if [[ "$OK_DIR_BAD" -ne 0 ]]; then
 fi
 echo "[override-ok] PASS (a): all $OK_DIR_LINE_COUNT dir= line(s) match expected dir with index_exists=true"
 
-# Assert (b): exactly N loaded=ok lines with distinct win= values; zero loaded=fail.
-OK_LOADED_COUNT="$(grep -c 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT_OK" 2>/dev/null || true)"
+# Assert (b): exactly N loaded=ok gen=0 lines with distinct win= values; zero loaded=fail.
+OK_LOADED_COUNT="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT_OK" 2>/dev/null || true)"
 if [[ "$OK_LOADED_COUNT" -ne "$SCREEN_COUNT_OK" ]]; then
-    echo "FAIL: override-ok: expected $SCREEN_COUNT_OK loaded=ok lines, found $OK_LOADED_COUNT"
+    echo "FAIL: override-ok: expected $SCREEN_COUNT_OK loaded=ok gen=0 lines, found $OK_LOADED_COUNT"
     cat "$TMPOUT_OK" || true
     exit 1
 fi
-OK_DISTINCT_WINS="$(grep 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT_OK" \
+OK_DISTINCT_WINS="$(grep -E 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT_OK" \
     | grep -o 'win=[0-9]*' | sort -u | wc -l | tr -d ' ')"
 if [[ "$OK_DISTINCT_WINS" -ne "$SCREEN_COUNT_OK" ]]; then
-    echo "FAIL: override-ok: expected $SCREEN_COUNT_OK distinct win= values in loaded=ok lines, found $OK_DISTINCT_WINS"
+    echo "FAIL: override-ok: expected $SCREEN_COUNT_OK distinct win= values in loaded=ok gen=0 lines, found $OK_DISTINCT_WINS"
     cat "$TMPOUT_OK" || true
     exit 1
 fi
@@ -347,25 +347,25 @@ if [[ "$OK_FAIL_COUNT" -ne 0 ]]; then
     cat "$TMPOUT_OK" || true
     exit 1
 fi
-echo "[override-ok] PASS (b): $SCREEN_COUNT_OK loaded=ok lines with distinct win= values, no loaded=fail"
+echo "[override-ok] PASS (b): $SCREEN_COUNT_OK loaded=ok gen=0 lines with distinct win= values, no loaded=fail"
 
-# Assert (c): win= set from loaded=ok lines must equal win= set from SLICE lines.
-OK_LOADED_WINS="$(grep 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT_OK" \
+# Assert (c): win= set from loaded=ok gen=0 lines must equal win= set from SLICE gen=0 lines.
+OK_LOADED_WINS="$(grep -E 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT_OK" \
     | grep -o 'win=[0-9]*' | sort -u | tr '\n' ' ' | sed 's/ $//')"
-OK_SLICE_WINS="$(grep 'ONLYWALLPAPERS_SLICE.*win=' "$TMPOUT_OK" \
+OK_SLICE_WINS="$(grep 'ONLYWALLPAPERS_SLICE.*gen=0' "$TMPOUT_OK" \
     | grep -o 'win=[0-9]*' | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ "$OK_LOADED_WINS" != "$OK_SLICE_WINS" ]]; then
-    echo "FAIL: override-ok: win= sets differ. loaded=ok wins: {$OK_LOADED_WINS} slice wins: {$OK_SLICE_WINS}"
+    echo "FAIL: override-ok: win= sets differ. loaded=ok gen=0 wins: {$OK_LOADED_WINS} slice wins: {$OK_SLICE_WINS}"
     cat "$TMPOUT_OK" || true
     exit 1
 fi
-echo "[override-ok] PASS (c): loaded=ok win= set equals SLICE win= set: {$OK_LOADED_WINS}"
+echo "[override-ok] PASS (c): loaded=ok gen=0 win= set equals SLICE gen=0 win= set: {$OK_LOADED_WINS}"
 
 # --- Check F: EMPTY-OVERRIDE (WALLPAPER_WEB_DIR="" treated as unset, falls to bundle) ---
 echo "[empty-override] Launching with WALLPAPER_WEB_DIR='' (empty string, expected to fall back to bundle)..."
 TMPOUT_EMPTY="$(mktemp)"
 
-env -u OW_SPIKE -u OW_WEBSPIKE WALLPAPER_WEB_DIR="" "$BIN" >"$TMPOUT_EMPTY" 2>&1 &
+env -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST WALLPAPER_WEB_DIR="" "$BIN" >"$TMPOUT_EMPTY" 2>&1 &
 PID_EMPTY=$!
 
 # Phase 1: poll up to 5s for the resolve line.
@@ -401,7 +401,7 @@ fi
 EMPTY_WIN_LINE_FOUND=0
 SCREEN_COUNT_EMPTY=0
 for i in $(seq 1 50); do
-    WIN_LINE_E="$(grep 'ONLYWALLPAPERS_WINDOWS count=' "$TMPOUT_EMPTY" 2>/dev/null | head -1 || true)"
+    WIN_LINE_E="$(grep 'ONLYWALLPAPERS_WINDOWS count=' "$TMPOUT_EMPTY" 2>/dev/null | grep 'gen=0' | head -1 || true)"
     if [[ -n "$WIN_LINE_E" ]]; then
         EMPTY_WIN_LINE_FOUND=1
         SCREEN_COUNT_EMPTY="$(echo "$WIN_LINE_E" | sed 's/.*count=\([0-9]*\).*/\1/')"
@@ -438,7 +438,7 @@ echo "[empty-override] PASS: windows created (count=$SCREEN_COUNT_EMPTY)"
 echo "[override-fail] Launching with WALLPAPER_WEB_DIR=/nonexistent-ow-xyz (expected to terminate)..."
 TMPOUT_FAIL="$(mktemp)"
 
-env -u OW_SPIKE -u OW_WEBSPIKE WALLPAPER_WEB_DIR="/nonexistent-ow-xyz" "$BIN" >"$TMPOUT_FAIL" 2>&1 &
+env -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST WALLPAPER_WEB_DIR="/nonexistent-ow-xyz" "$BIN" >"$TMPOUT_FAIL" 2>&1 &
 PID_FAIL=$!
 
 # Wait up to 5s for the process to exit on its own (it should exit(1) immediately).
@@ -494,7 +494,7 @@ echo "[override-fail] Got: $FAIL_LINE"
 echo "[override-relative] Launching with WALLPAPER_WEB_DIR=relative/path (expected to terminate)..."
 TMPOUT_REL="$(mktemp)"
 
-env -u OW_SPIKE -u OW_WEBSPIKE WALLPAPER_WEB_DIR="relative/path" "$BIN" >"$TMPOUT_REL" 2>&1 &
+env -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST WALLPAPER_WEB_DIR="relative/path" "$BIN" >"$TMPOUT_REL" 2>&1 &
 PID_REL=$!
 
 # Wait up to 5s for the process to exit on its own (it should exit(1) immediately).

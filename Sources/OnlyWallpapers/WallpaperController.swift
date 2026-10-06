@@ -14,8 +14,24 @@ struct WallpaperSliceGeometry: Equatable {
 
 struct WallpaperScreenRecord {
     let displayID: CGDirectDisplayID
-    let window: WallpaperWindow
+    let descriptor: ScreenDescriptor
+    let window: WallpaperWindow?
+    let webView: WebWallpaperView?
     let geometry: WallpaperSliceGeometry
+}
+
+// MARK: - computeLayout (pure, testable)
+
+nonisolated func computeLayout(_ frames: [CGRect]) -> (union: CGRect, slices: [WallpaperSliceGeometry]) {
+    if frames.isEmpty { return (.zero, []) }
+    let union = frames.reduce(CGRect.null) { $0.union($1) }
+    let slices = frames.map { f in
+        WallpaperSliceGeometry(
+            stageW: union.width, stageH: union.height,
+            offX: f.minX - union.minX,
+            offY: union.maxY - f.maxY)
+    }
+    return (union, slices)
 }
 
 // MARK: - WallpaperController
@@ -23,47 +39,275 @@ struct WallpaperScreenRecord {
 final class WallpaperController {
 
     private var records: [WallpaperScreenRecord] = []
+    private var committedDescriptors: [ScreenDescriptor] = []
+    private var reducer = WallpaperRefreshReducer()
+    private var commitGen: Int = 0
+    private var scheduleGen: Int = 0
+    nonisolated(unsafe) private var pendingItem: DispatchWorkItem?
+    nonisolated(unsafe) private var screenObserver: Any?
+    nonisolated(unsafe) private var wakeObserver: Any?
+    private let isFakeMode: Bool
+    private let fakeScreensFile: String?
 
-    nonisolated func computeLayout(_ frames: [CGRect]) -> (union: CGRect, slices: [WallpaperSliceGeometry]) {
-        if frames.isEmpty { return (.zero, []) }
-        let union = frames.reduce(CGRect.null) { $0.union($1) }
-        let slices = frames.map { f in
-            WallpaperSliceGeometry(
-                stageW: union.width, stageH: union.height,
-                offX: f.minX - union.minX,
-                offY: union.maxY - f.maxY)
-        }
-        return (union, slices)
+    init() {
+        let env = ProcessInfo.processInfo.environment
+        self.fakeScreensFile = env["OW_FAKE_SCREENS_FILE"]
+        self.isFakeMode = self.fakeScreensFile != nil
     }
 
-    func build() {
-        guard records.isEmpty else { return }
-        let webDir = WebDirectoryResolver.resolve()
-        let screens = NSScreen.screens
-        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WINDOWS count=\(screens.count)\n".utf8))
-        let (_, slices) = computeLayout(screens.map { $0.frame })
-        for (i, screen) in screens.enumerated() {
-            let geo = slices[i]
-            let did = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
-            let webView = WebWallpaperView(
-                frame: NSRect(origin: .zero, size: screen.frame.size),
-                webDirectory: webDir,
-                screenName: screen.localizedName,
-                geometry: geo
-            )
-            let win = WallpaperWindow(screen: screen, contentView: webView)
-            win.orderFrontRegardless()
-            records.append(WallpaperScreenRecord(displayID: did, window: win, geometry: geo))
-            let name = screen.localizedName
-            let f = screen.frame
-            let line = String(
-                format: "ONLYWALLPAPERS_SLICE did=%u win=%ld frame=%.4f,%.4f,%.4f,%.4f stageW=%.4f stageH=%.4f offX=%.4f offY=%.4f screen=%@\n",
-                did, win.windowNumber, f.minX, f.minY, f.width, f.height,
-                geo.stageW, geo.stageH, geo.offX, geo.offY, name)
-            FileHandle.standardOutput.write(Data(line.utf8))
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
-                win?.logPlacement(screenName: name)
+    deinit {
+        pendingItem?.cancel()
+        if let obs = screenObserver { NotificationCenter.default.removeObserver(obs) }
+        if let obs = wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(obs) }
+    }
+
+    func initialBuild() {
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.scheduleRefresh(reason: "screens-changed") }
+        }
+
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.scheduleRefresh(reason: "wake") }
+        }
+
+        let descriptors = currentScreenDescriptors()
+        performCommit(descriptors, reason: "initial")
+    }
+
+    // FIX 3: force a recommit using real NSScreen.screens, bypassing the reducer no-op.
+    // Only installed when OW_REBUILD_TEST=1 (and not fake mode) in AppDelegate.
+    // Applies a fixed delta K=137 to each slice so the applied oracle proves the stage
+    // actually MOVED to the commanded value, not left at the previously-correct value.
+    // Real add/remove of a display is a Phase 5 check (no third display in CI).
+    func forceRecommit() {
+        let descriptors = currentScreenDescriptors()
+        performCommit(descriptors, reason: "forced", sliceDelta: 137)
+    }
+
+    private func currentScreenDescriptors() -> [ScreenDescriptor] {
+        if let path = fakeScreensFile {
+            return parseFakeScreens(path: path)
+        }
+        // FIX 1: when NSScreenNumber is absent or zero, synthesize a unique sentinel
+        // per screen index. Sentinels use the high bit (0x80000000+idx) so they cannot
+        // collide with real CGDirectDisplayIDs, which are small positive integers.
+        return NSScreen.screens.enumerated().map { (idx, screen) in
+            let rawID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            let did: CGDirectDisplayID
+            if let id = rawID, id != 0 {
+                did = id
+            } else {
+                did = 0x8000_0000 | CGDirectDisplayID(idx)
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WARN displayID=missing screenIdx=\(idx) name=\(screen.localizedName) fallback=\(did)\n".utf8))
             }
+            let scale = screen.backingScaleFactor
+            let f = screen.frame
+            return ScreenDescriptor(
+                displayID: did,
+                frame: f,
+                scale: scale,
+                pixelW: Int(f.width * scale),
+                pixelH: Int(f.height * scale))
+        }
+    }
+
+    private func parseFakeScreens(path: String) -> [ScreenDescriptor] {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+        var result: [ScreenDescriptor] = []
+        let lines = content.components(separatedBy: "\n")
+        for (idx, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            let parts = trimmed.components(separatedBy: ",")
+            guard parts.count >= 4,
+                  let x = Double(parts[0].trimmingCharacters(in: .whitespaces)),
+                  let y = Double(parts[1].trimmingCharacters(in: .whitespaces)),
+                  let w = Double(parts[2].trimmingCharacters(in: .whitespaces)),
+                  let h = Double(parts[3].trimmingCharacters(in: .whitespaces)) else { continue }
+            let scale: CGFloat = parts.count >= 5 ? (Double(parts[4].trimmingCharacters(in: .whitespaces)).map { CGFloat($0) } ?? 2.0) : 2.0
+            let did: CGDirectDisplayID
+            if parts.count >= 6, let d = UInt32(parts[5].trimmingCharacters(in: .whitespaces)) {
+                did = d == 0 ? CGDirectDisplayID(idx + 1) : d
+            } else {
+                did = CGDirectDisplayID(idx + 1)
+            }
+            let frame = CGRect(x: x, y: y, width: w, height: h)
+            result.append(ScreenDescriptor(
+                displayID: did,
+                frame: frame,
+                scale: scale,
+                pixelW: Int(w * Double(scale)),
+                pixelH: Int(h * Double(scale))))
+        }
+        return result
+    }
+
+    private func scheduleRefresh(reason: String) {
+        pendingItem?.cancel()
+        pendingItem = nil
+        scheduleGen += 1
+        let capturedGen = scheduleGen
+        let snapshot = currentScreenDescriptors()
+
+        let action = reducer.snapshot(snapshot, committed: committedDescriptors)
+
+        switch action {
+        case .none:
+            let g = commitGen
+            let n = records.count
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_REBUILD gen=\(g) reason=noop old=\(n) new=\(n)\n".utf8))
+
+        case .scheduleDebounce:
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, self.scheduleGen == capturedGen else { return }
+                let result = self.reducer.debounceFired(capturedGen: capturedGen, currentGen: self.scheduleGen)
+                self.applyAction(result, reason: reason)
+            }
+            pendingItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: item)
+
+        case .scheduleEmptyConfirm:
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, self.scheduleGen == capturedGen else { return }
+                let result = self.reducer.emptyConfirmFired(capturedGen: capturedGen, currentGen: self.scheduleGen)
+                self.applyAction(result, reason: reason)
+            }
+            pendingItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
+
+        case .commit(let next):
+            performCommit(next, reason: reason)
+
+        case .commitEmpty:
+            performCommit([], reason: reason)
+
+        case .dropStale:
+            break
+        }
+    }
+
+    private func applyAction(_ action: RefreshAction, reason: String) {
+        switch action {
+        case .commit(let next):
+            performCommit(next, reason: reason)
+        case .commitEmpty:
+            performCommit([], reason: reason)
+        case .dropStale, .none:
+            break
+        default:
+            break
+        }
+    }
+
+    private func performCommit(_ descriptors: [ScreenDescriptor], reason: String, sliceDelta: CGFloat = 0) {
+        let gen = commitGen
+        commitGen += 1
+
+        let webDir = isFakeMode ? nil : Optional(WebDirectoryResolver.resolve())
+        let oldCount = records.count
+        let newCount = descriptors.count
+
+        let (_, baseSlices) = computeLayout(descriptors.map { $0.frame })
+        let slices: [WallpaperSliceGeometry] = sliceDelta != 0
+            ? baseSlices.map { WallpaperSliceGeometry(stageW: $0.stageW, stageH: $0.stageH, offX: $0.offX + sliceDelta, offY: $0.offY + sliceDelta) }
+            : baseSlices
+
+        let nextIDs = Set(descriptors.map { $0.displayID })
+
+        // RETIRE removed screens
+        for rec in records where !nextIDs.contains(rec.displayID) {
+            let winNum = rec.window?.windowNumber ?? 0
+            if !isFakeMode {
+                rec.webView?.stopLoading()
+                rec.webView?.navigationDelegate = nil
+                rec.window?.contentView = nil
+                rec.window?.close()
+            }
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_RETIRE win=\(winNum) did=\(rec.displayID) gen=\(gen)\n".utf8))
+        }
+
+        var newRecords: [WallpaperScreenRecord] = []
+
+        // Keyed by displayID so duplicate IDs overwrite (no linear first-match aliasing).
+        let existingByID: [CGDirectDisplayID: WallpaperScreenRecord] = Dictionary(
+            records.map { ($0.displayID, $0) },
+            uniquingKeysWith: { _, last in last }
+        )
+
+        for (i, desc) in descriptors.enumerated() {
+            let geo = slices[i]
+
+            if let existing = existingByID[desc.displayID] {
+                // UPDATE survivor
+                if !isFakeMode {
+                    existing.window?.updateFrame(desc.frame)
+                    existing.webView?.applyGeometry(geo, gen: gen)
+                }
+                newRecords.append(WallpaperScreenRecord(
+                    displayID: desc.displayID,
+                    descriptor: desc,
+                    window: existing.window,
+                    webView: existing.webView,
+                    geometry: geo))
+            } else {
+                // ADD newcomer
+                if !isFakeMode, let webDir = webDir {
+                    // FIX 5: pass commitGen so loaded=ok and applied lines carry the commit gen
+                    let webView = WebWallpaperView(
+                        frame: NSRect(origin: .zero, size: desc.frame.size),
+                        webDirectory: webDir,
+                        screenName: "Display-\(desc.displayID)",
+                        geometry: geo,
+                        commitGen: gen)
+                    let win = WallpaperWindow(frame: desc.frame, contentView: webView)
+                    win.orderFrontRegardless()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
+                        win?.logPlacement(screenName: "Display-\(desc.displayID)")
+                    }
+                    newRecords.append(WallpaperScreenRecord(
+                        displayID: desc.displayID,
+                        descriptor: desc,
+                        window: win,
+                        webView: webView,
+                        geometry: geo))
+                } else {
+                    newRecords.append(WallpaperScreenRecord(
+                        displayID: desc.displayID,
+                        descriptor: desc,
+                        window: nil,
+                        webView: nil,
+                        geometry: geo))
+                }
+            }
+        }
+
+        records = newRecords
+        committedDescriptors = descriptors
+        reducer.pendingState = .idle
+
+        // TELEMETRY (FIX 4: new=0 and count=0 are already present when descriptors is empty)
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_REBUILD gen=\(gen) reason=\(reason) old=\(oldCount) new=\(newCount)\n".utf8))
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WINDOWS count=\(newCount) gen=\(gen)\n".utf8))
+
+        for rec in newRecords {
+            let winNum = rec.window?.windowNumber ?? 0
+            let f = rec.descriptor.frame
+            let g = rec.geometry
+            let line = String(
+                format: "ONLYWALLPAPERS_SLICE did=%u win=%ld frame=%.4f,%.4f,%.4f,%.4f stageW=%.4f stageH=%.4f offX=%.4f offY=%.4f screen=Display-%u gen=%d\n",
+                rec.displayID, winNum,
+                f.minX, f.minY, f.width, f.height,
+                g.stageW, g.stageH, g.offX, g.offY,
+                rec.displayID, gen)
+            FileHandle.standardOutput.write(Data(line.utf8))
         }
     }
 }

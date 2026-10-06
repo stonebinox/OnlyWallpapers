@@ -26,4 +26,4 @@ This is a folder inside the OnlyWallpapers repo, not a separate git history.
 - `systems/swift-shell/overview.md`: AppKit windows, screen geometry, the
   desktop-layer trick.
 - `systems/web-render/overview.md`: the HTML/CSS/JS render layer and the
-  per-screen slice transform.
+  per-screen slice (CSS left/top positioning).

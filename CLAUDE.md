@@ -124,7 +124,7 @@ OnlyWallpapers/
 │   └── web/                          # render layer; hot-editable via WALLPAPER_WEB_DIR
 │       ├── index.html  style.css  wallpaper.js
 │       └── assets/                   # bg.mp4 etc (gitignored)
-├── scripts/                          # smoke-run, webdir-check, package-app, package-check
+├── scripts/                          # smoke-run, webdir-check, package-app/check, rebuild-check
 └── ow-local/                         # knowledge repo (folder, same git history)
 ```
 

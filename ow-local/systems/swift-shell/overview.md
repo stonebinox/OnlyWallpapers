@@ -9,7 +9,7 @@ Status: partially implemented. The process skeleton (`main.swift` and
 (ow-mbw.3) exists, `WebWallpaperView` (ow-94b.1) fills each window with a `WKWebView`
 playing the real looping-video page (ow-94b.2), and the `WallpaperController`
 (ow-blz.1) now owns the per-screen windows and computes the union canvas + per-screen
-slice geometry. The per-screen slice geometry is now injected into the web layer and applied by left/top positioning (ow-blz.2). The app can be packaged as a standalone, unsigned `.app` with a menu-bar Quit item (ow-aad.5). Still planned: the display hot-plug rebuild (ow-blz.3) and launch at login (ow-aad.3).
+slice geometry. The per-screen slice geometry is now injected into the web layer and applied by left/top positioning (ow-blz.2). The app can be packaged as a standalone, unsigned `.app` with a menu-bar Quit item (ow-aad.5), and rebuilds its windows IN PLACE when displays are attached, detached, or rearranged (ow-blz.3). Still planned: launch at login (ow-aad.3).
 
 ## Components
 - **main.swift**: sets up `NSApplication`, activation policy `.accessory` (no Dock
@@ -18,9 +18,10 @@ slice geometry. The per-screen slice geometry is now injected into the web layer
 - **AppDelegate**: sets the accessory policy (guarded: it only calls
   `setActivationPolicy(.accessory)` when not already accessory, since `LSUIElement`
   sets it pre-launch in the `.app`), installs the SIGINT handler, and (in the default
-  run) creates a `WallpaperController`, calls `build()`, and creates the
-  `StatusItemController`. It no longer creates windows itself.
-- **WallpaperController** (ow-blz.1, done): the geometry brain. On `build()` it
+  run) creates a `WallpaperController`, calls `initialBuild()` (which also registers the
+  display-change observers), and creates the `StatusItemController`. It no longer
+  creates windows itself.
+- **WallpaperController** (ow-blz.1 + ow-blz.3, done): the geometry brain. On `initialBuild()` it
   snapshots `NSScreen.screens`, computes the union canvas and each screen's slice
   geometry (a pure `nonisolated computeLayout([CGRect])`: `offX = minX - union.minX`,
   `offY = union.maxY - screen.maxY`, points, union seeded from `CGRect.null`), creates
@@ -28,7 +29,7 @@ slice geometry. The per-screen slice geometry is now injected into the web layer
   slice `offX/offY` are data only, never applied to any AppKit rect), passes the web
   dir resolved by `WebDirectoryResolver` (ow-94b.3: `WALLPAPER_WEB_DIR` env override,
   else the `Bundle.module` bundled copy), and logs the geometry. Records are stored by `CGDirectDisplayID` (not
-  `NSScreen`). Injecting the geometry into the web layer (via a document-start WKUserScript) is done (ow-blz.2); the display hot-plug rebuild is ow-blz.3 (a flicker-safe swap, not a destructive teardown).
+  `NSScreen`). Injecting the geometry into the web layer (via a document-start WKUserScript) is done (ow-blz.2). It also rebuilds IN PLACE on display changes (ow-blz.3, done): it observes `didChangeScreenParametersNotification` plus wake, coalesces (a debounce plus an empty-confirm so a transient zero-screen snapshot during sleep/wake cannot blank the desktop), decides via a pure generation-guarded reducer, diffs by `displayID`, and updates survivors (`setFrame` plus a runtime `window.__applyWallpaperGeometry` left/top re-apply, so the video keeps playing, designed for no black flash and to be confirmed on real hardware in Phase 5) while only creating or closing windows for added or removed displays. The decision logic (reducer, `arrangementChanged`, `computeLayout`) is pure and unit-tested via `OW_SELFTEST`.
 - **WallpaperWindow** (ow-mbw.3, done): a `final NSWindow` subclass, borderless at
   the desktop level, content-agnostic (holds whatever content view it is given),
   `canBecomeKey`/`canBecomeMain` false. The desktop-layer trick lives here. It holds

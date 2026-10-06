@@ -52,8 +52,8 @@ Last updated: 2026-10-06
 
 ### Not Done
 - A real sample `bg.mp4` in `web/assets/` (ow-94b.4; a generated test clip is used now).
-- Rebuild on display hot-plug (ow-blz.3); geometry unit tests (ow-blz.4); slice sync
-  across pause/resume (ow-blz.5); retiring the webspike (deferred).
+- Geometry unit tests (ow-blz.4); slice sync across pause/resume (ow-blz.5); retiring
+  the webspike (deferred).
 
 ### Also de-risked
 - ow-94b.5 (done): a looping `<video>` in a transparent WKWebView at the desktop
@@ -101,16 +101,32 @@ Last updated: 2026-10-06
   arm64 only. To set a video in the installed app: drop `bg.mp4` into the bundle or
   re-run the package script (a friendlier path is ow-aqx.2). Launch at login is
   ow-aad.3.
+- ow-blz.3 (done): the wallpaper rebuilds IN PLACE when displays are attached,
+  detached, or rearranged (no relaunch; the in-place video keeps playing, so it is
+  designed for no black flash, to be confirmed visually in Phase 5 on real hardware).
+  WallpaperController observes
+  `didChangeScreenParametersNotification` + wake, coalesces via a pure
+  generation-guarded reducer (debounce + an empty-confirm so a transient zero-screen
+  snapshot during sleep/wake does not blank the desktop), diffs by `displayID`, and
+  updates survivors (`setFrame` + a runtime `window.__applyWallpaperGeometry` left/top
+  re-apply, keeping the video playing) while only creating/closing windows for
+  added/removed displays. Rejected the recreate-and-swap approach (a hidden new WebView
+  has its backing store culled, so revealing it flashes the opaque black base; also
+  restarts the video at t=0). The decision logic is pure and unit-tested (`OW_SELFTEST`,
+  38 cases incl. the T-shape); `scripts/rebuild-check.sh` adds a fake-screens inject
+  (3-screen T-shape math), a real-display forced re-commit (the applied-oracle
+  `left==-offX` re-validated on real glass), and the empty-confirm cases. The real
+  hot-plug seamlessness on a physical T-arrangement is a manual Phase 5 check.
 
 ### Next Step
 ow-aad.3 (launch at login) makes the packaged `.app` auto-start, and ow-aad.1 verifies
-the lock/unlock, sleep/wake, screensaver, and Spaces behavior on the real machine.
-ow-blz.3 (rebuild the windows on display hot-plug, a flicker-safe swap) and ow-blz.4
-(geometry unit tests, the Y-flip cases the aligned hardware cannot exercise). ow-94b.4
-sources a real sample video; ow-mbw.4 adds the fuller window-config run check; ow-blz.5
-handles slice sync. Retiring the env-gated webspike A/B is a deferred cleanup.
+the lock/unlock, sleep/wake, screensaver, and Spaces behavior on the real machine
+(the perfect moment is while a live instance is running). ow-blz.4 (geometry unit
+tests, now partly covered by the ow-blz.3 OW_SELFTEST cases) and ow-94b.4 (a real
+sample video). ow-mbw.4 adds the fuller window-config run check; ow-blz.5 handles slice
+sync across pause/resume. Retiring the env-gated webspike A/B is a deferred cleanup.
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.
-- DEC-002: multi-monitor via a single spanned canvas (union rect, per-screen
-  slice transform).
+- DEC-002: multi-monitor via a single spanned canvas (union rect, per-screen slice
+  applied by CSS left/top positioning, not a CSS transform).

@@ -99,9 +99,9 @@ TMPOUT="$TMP_DIR/stdout.txt"
 # Change cwd to outside the repo so the app cannot accidentally find source-tree files
 cd "$TMP_DIR"
 if command -v setsid >/dev/null 2>&1; then
-    env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE setsid "$TMP_BIN" >"$TMPOUT" 2>&1 &
+    env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST setsid "$TMP_BIN" >"$TMPOUT" 2>&1 &
 else
-    env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE "$TMP_BIN" >"$TMPOUT" 2>&1 &
+    env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$TMP_BIN" >"$TMPOUT" 2>&1 &
 fi
 APP_PID=$!
 echo "[standalone] PID=$APP_PID"
@@ -229,7 +229,7 @@ for i in $(seq 1 100); do
     if ! kill -0 "$APP_PID" 2>/dev/null; then
         break
     fi
-    WEB_OK_COUNT="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok( |$)' "$TMPOUT" 2>/dev/null || true)"
+    WEB_OK_COUNT="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT" 2>/dev/null || true)"
     if [ "$WEB_OK_COUNT" -ge "$SCREEN_COUNT" ]; then
         WEB_OK=1
         break
@@ -238,8 +238,8 @@ for i in $(seq 1 100); do
 done
 
 if [ $WEB_OK -ne 1 ]; then
-    WEB_OK_COUNT="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok( |$)' "$TMPOUT" 2>/dev/null || true)"
-    fail "Expected $SCREEN_COUNT loaded=ok lines, got $WEB_OK_COUNT within 10s"
+    WEB_OK_COUNT="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT" 2>/dev/null || true)"
+    fail "Expected $SCREEN_COUNT loaded=ok gen=0 lines, got $WEB_OK_COUNT within 10s"
     echo "--- output ---"
     cat "$TMPOUT" || true
     echo ""
@@ -255,13 +255,13 @@ else
     fail "$FAIL_WEB loaded=fail line(s) found"
 fi
 
-# --- Assert N distinct win= values in loaded=ok lines ---
-DISTINCT_WINS="$(grep -E 'ONLYWALLPAPERS_WEB.*loaded=ok( |$)' "$TMPOUT" \
+# --- Assert N distinct win= values in loaded=ok gen=0 lines ---
+DISTINCT_WINS="$(grep -E 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT" \
     | grep -o 'win=[0-9]*' | sort -u | wc -l | tr -d ' ')"
 if [ "$DISTINCT_WINS" -ge "$SCREEN_COUNT" ]; then
-    pass "$SCREEN_COUNT loaded=ok lines with $DISTINCT_WINS distinct win= values"
+    pass "$SCREEN_COUNT loaded=ok gen=0 lines with $DISTINCT_WINS distinct win= values"
 else
-    fail "Expected $SCREEN_COUNT distinct win= values in loaded=ok lines, found $DISTINCT_WINS"
+    fail "Expected $SCREEN_COUNT distinct win= values in loaded=ok gen=0 lines, found $DISTINCT_WINS"
 fi
 
 # --- SIGINT and confirm clean exit ---

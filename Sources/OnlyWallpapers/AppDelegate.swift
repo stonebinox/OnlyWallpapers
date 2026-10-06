@@ -5,8 +5,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Retained for the process lifetime; SIGINT terminates the app cleanly.
     private var sigintSource: DispatchSourceSignal?
 
-    // Retained for the process lifetime. A future rebuild (ow-blz.3) will tear down and recreate windows.
+    // Retained for the process lifetime.
     private var wallpaperController: WallpaperController?
+    private var sigUSR1Source: DispatchSourceSignal?
 
     // WebSpike: activity token and controllers kept alive for the process lifetime.
     // AnyObject avoids importing WebKit in this file.
@@ -29,7 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sigintSource = src
     }
 
-    // The wallpaper must survive window close/rebuild. A future rebuild (ow-blz.3) will tear down and recreate windows.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -85,8 +85,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Default production path: WallpaperController spans all screens.
             let controller = WallpaperController()
-            controller.build()
+            controller.initialBuild()
             self.wallpaperController = controller
+
+            if env["OW_FAKE_SCREENS_FILE"] != nil {
+                signal(SIGUSR1, SIG_IGN)
+                let usr1Src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+                usr1Src.setEventHandler {
+                    NotificationCenter.default.post(
+                        name: NSApplication.didChangeScreenParametersNotification,
+                        object: NSApp)
+                }
+                usr1Src.resume()
+                self.sigUSR1Source = usr1Src
+            } else if env["OW_REBUILD_TEST"] == "1" {
+                // FIX 3: test-gated forced recommit path. SIGUSR1 triggers a real-screen commit,
+                // bypassing the reducer no-op check. Never installed in normal production launches.
+                signal(SIGUSR1, SIG_IGN)
+                let usr1Src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+                usr1Src.setEventHandler { [weak controller] in
+                    controller?.forceRecommit()
+                }
+                usr1Src.resume()
+                self.sigUSR1Source = usr1Src
+            }
+
             statusItemController = StatusItemController()
         }
     }

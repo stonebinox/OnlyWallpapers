@@ -19,7 +19,7 @@ rendering.
   ```
 - Production runs with the variable unset. The bundled web layer (copied at build time via `resources: [.copy("web")]`) is used automatically.
 - Drop your clip at `Sources/OnlyWallpapers/web/assets/bg.mp4` and rebuild.
-- Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/video-check.sh` (video asset check).
+- Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/package-check.sh` (standalone .app), `scripts/rebuild-check.sh` (display hot-plug rebuild), `scripts/video-check.sh` (video asset check).
 
 ## Build and install the app
 

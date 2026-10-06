@@ -5,9 +5,9 @@ import CoreGraphics
 
 final class WallpaperWindow: NSWindow {
 
-    init(screen: NSScreen, contentView: NSView) {
+    init(frame: CGRect, contentView: NSView) {
         super.init(
-            contentRect: screen.frame,
+            contentRect: frame,
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -20,12 +20,17 @@ final class WallpaperWindow: NSWindow {
         self.isOpaque = false
         self.backgroundColor = .clear
         self.isReleasedWhenClosed = false
+        contentView.autoresizingMask = [.width, .height]
         self.contentView = contentView
-        self.setFrame(screen.frame, display: false)
+        self.setFrame(frame, display: false)
     }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    func updateFrame(_ newFrame: CGRect) {
+        self.setFrame(newFrame, display: true)
+    }
 
     // logPlacement emits one diagnostic line after the window is on screen,
     // confirming the actual CG layer and z-order relative to the desktop-icon level.

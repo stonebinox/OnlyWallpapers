@@ -14,9 +14,9 @@ HITS_WK="$(grep -rnE 'WKWebView|WKWebViewConfiguration' Sources/ --include='*.sw
     --exclude='WebSpikeWindow.swift' --exclude='WebWallpaperView.swift' || true)"
 if [ -n "$HITS_WK" ]; then echo "FAIL: WKWebView/WKWebViewConfiguration found outside WebSpikeWindow.swift or WebWallpaperView.swift"; echo "$HITS_WK"; exit 1; fi
 
-# didChangeScreenParametersNotification and Info.plist are forbidden in ALL Swift files.
-HITS_FORBIDDEN="$(grep -rnE 'didChangeScreenParametersNotification|Info\.plist' Sources/ --include='*.swift' || true)"
-if [ -n "$HITS_FORBIDDEN" ]; then echo "FAIL: forbidden symbol(s) in Sources/"; echo "$HITS_FORBIDDEN"; exit 1; fi
+# Info.plist is forbidden in all Swift files.
+HITS_FORBIDDEN="$(grep -rnE 'Info\.plist' Sources/ --include='*.swift' || true)"
+if [ -n "$HITS_FORBIDDEN" ]; then echo "FAIL: Info.plist reference found in Sources/"; echo "$HITS_FORBIDDEN"; exit 1; fi
 
 # NSWindow is forbidden in all Swift files EXCEPT WallpaperWindow.swift and WebSpikeWindow.swift.
 HITS_NSWINDOW="$(grep -rnE '\bNSWindow\b' Sources/ --include='*.swift' \
@@ -104,7 +104,7 @@ trap cleanup EXIT
 
 # --- Step 3: launch binary in background ---
 echo "[launch] Starting $BIN..."
-env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE "$BIN" >"$TMPOUT" 2>&1 &
+env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[launch] PID: $PID"
 
@@ -176,7 +176,7 @@ echo "[resolve] PASS: $RESOLVE_LINE"
 
 # --- Step 7a: verify WallpaperWindow placement (default run only) ---
 echo "[windows] Checking ONLYWALLPAPERS_WINDOWS count line..."
-WINDOWS_LINE="$(grep "ONLYWALLPAPERS_WINDOWS count=" "$TMPOUT" | head -1 || true)"
+WINDOWS_LINE="$(grep "ONLYWALLPAPERS_WINDOWS count=" "$TMPOUT" | grep 'gen=0' | head -1 || true)"
 if [ -z "$WINDOWS_LINE" ]; then
     echo "FAIL: ONLYWALLPAPERS_WINDOWS count= line not found in output"
     echo "--- output ---"
@@ -289,7 +289,7 @@ else
 
     WEB_OK=0
     for i in $(seq 1 80); do
-        WEB_OK_COUNT="$(grep -c 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT" 2>/dev/null || true)"
+        WEB_OK_COUNT="$(grep -cE 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT" 2>/dev/null || true)"
         if [ "$WEB_OK_COUNT" -ge "$SCREEN_COUNT" ]; then
             WEB_OK=1
             break
@@ -298,7 +298,7 @@ else
     done
 
     if [ "$WEB_OK" -ne 1 ]; then
-        echo "FAIL: expected $SCREEN_COUNT ONLYWALLPAPERS_WEB loaded=ok line(s), got fewer within 8s"
+        echo "FAIL: expected $SCREEN_COUNT ONLYWALLPAPERS_WEB loaded=ok gen=0 line(s), got fewer within 8s"
         echo "--- output ---"
         cat "$TMPOUT" || true
         exit 1
@@ -313,11 +313,11 @@ else
         exit 1
     fi
 
-    # Verify N distinct win= values in loaded=ok lines (poll a bit more to let stragglers arrive).
+    # Verify N distinct win= values in loaded=ok gen=0 lines (poll a bit more to let stragglers arrive).
     # win= is always unique per window; screen= names can collide on identical monitors.
     DISTINCT_OK=0
     for i in $(seq 1 20); do
-        DISTINCT_WINS_WEB="$(grep 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT" \
+        DISTINCT_WINS_WEB="$(grep -E 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT" \
             | grep -o 'win=[0-9]*' \
             | sort -u \
             | wc -l \
@@ -329,13 +329,13 @@ else
         sleep 0.1
     done
     if [ "$DISTINCT_OK" -ne 1 ]; then
-        echo "FAIL: expected $SCREEN_COUNT distinct win= value(s) in loaded=ok lines, found $DISTINCT_WINS_WEB"
+        echo "FAIL: expected $SCREEN_COUNT distinct win= value(s) in loaded=ok gen=0 lines, found $DISTINCT_WINS_WEB"
         echo "--- output ---"
         cat "$TMPOUT" || true
         exit 1
     fi
 
-    # (b) Parse frame=WxH from every loaded=ok line; require W > 100 and H > 100.
+    # (b) Parse frame=WxH from every loaded=ok gen=0 line; require W > 100 and H > 100.
     FRAME_BAD=0
     while IFS= read -r okline; do
         WIN_ID="$(echo "$okline" | grep -o 'win=[0-9]*' | head -1)"
@@ -351,14 +351,14 @@ else
             echo "FAIL: loaded=ok frame too small for $WIN_ID (${W}x${H}, need >100x100): $okline"
             FRAME_BAD=1
         fi
-    done < <(grep 'ONLYWALLPAPERS_WEB.*loaded=ok' "$TMPOUT")
+    done < <(grep -E 'ONLYWALLPAPERS_WEB.*loaded=ok.*gen=0( |$)' "$TMPOUT")
     if [ "$FRAME_BAD" -ne 0 ]; then
         echo "--- output ---"
         cat "$TMPOUT" || true
         exit 1
     fi
 
-    echo "[webload] PASS: $SCREEN_COUNT loaded=ok line(s) with distinct win= values, no loaded=fail, all frames >100x100"
+    echo "[webload] PASS: $SCREEN_COUNT loaded=ok gen=0 line(s) with distinct win= values, no loaded=fail, all frames >100x100"
 fi
 
 # --- Step 7d: geometry oracle (SLICE lines) ---
@@ -368,7 +368,7 @@ if [ "$SCREEN_COUNT" -eq 0 ]; then
 else
     # Poll up to 2s for SLICE lines (emitted synchronously in build(), should already be present by now).
     for i in $(seq 1 20); do
-        SLICE_COUNT="$(grep -c "^ONLYWALLPAPERS_SLICE " "$TMPOUT" 2>/dev/null || true)"
+        SLICE_COUNT="$(grep "^ONLYWALLPAPERS_SLICE " "$TMPOUT" 2>/dev/null | grep -c 'gen=0' || true)"
         if [ "$SLICE_COUNT" -ge "$SCREEN_COUNT" ]; then
             break
         fi
@@ -379,10 +379,12 @@ else
 BEGIN { n = 0; sc = 0; eps = 0.5; fail = 0 }
 
 /^ONLYWALLPAPERS_WINDOWS count=/ {
+    if ($0 !~ /gen=0( |$)/) next
     split($2, a, "="); n = int(a[2])
 }
 
 /^ONLYWALLPAPERS_SLICE / {
+    if ($0 !~ /gen=0( |$)/) next
     sc++
     split($2, a, "="); did = a[2]
     split($3, a, "="); win = a[2]
@@ -410,12 +412,14 @@ BEGIN { n = 0; sc = 0; eps = 0.5; fail = 0 }
 }
 
 /ONLYWALLPAPERS_WEB.*loaded=ok/ {
-    webwin = ""
+    if ($0 !~ /gen=0( |$)/) next
+    webwin = ""; webframe = ""
     for (i = NF; i >= 1; i--) {
-        if ($i ~ /^win=/) { split($i, a, "="); webwin = a[2]; break }
+        if ($i ~ /^win=/ && webwin == "") { split($i, a, "="); webwin = a[2] }
+        if ($i ~ /^frame=/ && webframe == "") { webframe = $i }
     }
-    if (webwin != "") {
-        split($NF, a, "="); split(a[2], b, "x"); web_w[webwin] = b[1]+0; web_h[webwin] = b[2]+0
+    if (webwin != "" && webframe != "") {
+        split(webframe, a, "="); split(a[2], b, "x"); web_w[webwin] = b[1]+0; web_h[webwin] = b[2]+0
     }
 }
 
@@ -512,10 +516,12 @@ else
 BEGIN { n = 0; eps = 0.5; fail = 0 }
 
 /^ONLYWALLPAPERS_WINDOWS count=/ {
+    if ($0 !~ /gen=0( |$)/) next
     split($2, a, "="); n = int(a[2])
 }
 
 /^ONLYWALLPAPERS_SLICE / {
+    if ($0 !~ /gen=0( |$)/) next
     split($3, a, "="); win = a[2]
     split($5, a, "="); sw = a[2]+0
     split($6, a, "="); sh = a[2]+0
@@ -530,6 +536,7 @@ BEGIN { n = 0; eps = 0.5; fail = 0 }
 
 /ONLYWALLPAPERS_WEB applied win=/ {
     if ($0 ~ /applied=fail/) next
+    if ($0 !~ /gen=0( |$)/) next
     split($3, a, "="); win = a[2]
     split($4, a, "="); l = a[2]+0
     split($5, a, "="); t = a[2]+0

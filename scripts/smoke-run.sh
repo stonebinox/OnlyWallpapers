@@ -341,6 +341,129 @@ else
     echo "[webload] PASS: $SCREEN_COUNT loaded=ok line(s) with distinct win= values, no loaded=fail, all frames >100x100"
 fi
 
+# --- Step 7d: geometry oracle (SLICE lines) ---
+echo "[geo] Checking ONLYWALLPAPERS_SLICE geometry oracle..."
+if [ "$SCREEN_COUNT" -eq 0 ]; then
+    echo "[geo] PASS: count=0, no SLICE assertions needed"
+else
+    # Poll up to 2s for SLICE lines (emitted synchronously in build(), should already be present by now).
+    for i in $(seq 1 20); do
+        SLICE_COUNT="$(grep -c "^ONLYWALLPAPERS_SLICE " "$TMPOUT" 2>/dev/null || true)"
+        if [ "$SLICE_COUNT" -ge "$SCREEN_COUNT" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    GEO_OUT="$(awk '
+BEGIN { n = 0; sc = 0; eps = 0.5; fail = 0 }
+
+/^ONLYWALLPAPERS_WINDOWS count=/ {
+    split($2, a, "="); n = int(a[2])
+}
+
+/^ONLYWALLPAPERS_SLICE / {
+    sc++
+    split($2, a, "="); did = a[2]
+    split($3, a, "="); win = a[2]
+    split($4, a, "="); split(a[2], b, ","); fx=b[1]+0; fy=b[2]+0; fw=b[3]+0; fh=b[4]+0
+    split($5, a, "="); sw = a[2]+0
+    split($6, a, "="); sh = a[2]+0
+    split($7, a, "="); ox = a[2]+0
+    split($8, a, "="); oy = a[2]+0
+    did_arr[sc] = did
+    win_arr[sc] = win
+    fx_arr[sc] = fx; fy_arr[sc] = fy; fw_arr[sc] = fw; fh_arr[sc] = fh
+    sw_arr[sc] = sw; sh_arr[sc] = sh
+    ox_arr[sc] = ox; oy_arr[sc] = oy
+    slice_lines[sc] = $0
+    dids[did]++
+    if (sc == 1) {
+        ref_sw = sw; ref_sh = sh
+        union_minX = fx; union_minY = fy; union_maxX = fx+fw; union_maxY = fy+fh
+    } else {
+        if (fx < union_minX) union_minX = fx
+        if (fy < union_minY) union_minY = fy
+        if (fx+fw > union_maxX) union_maxX = fx+fw
+        if (fy+fh > union_maxY) union_maxY = fy+fh
+    }
+}
+
+/ONLYWALLPAPERS_WEB.*loaded=ok/ {
+    webwin = ""
+    for (i = NF; i >= 1; i--) {
+        if ($i ~ /^win=/) { split($i, a, "="); webwin = a[2]; break }
+    }
+    if (webwin != "") {
+        split($NF, a, "="); split(a[2], b, "x"); web_w[webwin] = b[1]+0; web_h[webwin] = b[2]+0
+    }
+}
+
+END {
+    if (sc != n) { printf "FAIL [geo]: expected %d SLICE lines, found %d\n", n, sc; fail = 1 }
+    ndids = 0; for (d in dids) ndids++
+    if (ndids != n) { printf "FAIL [geo]: expected %d distinct did= values, found %d\n", n, ndids; fail = 1 }
+    if (sc == 0) { if (!fail) print "PASS [geo]: N=0, no SLICE assertions needed"; exit fail }
+    for (i = 1; i <= sc; i++) {
+        diff = sw_arr[i] - ref_sw; if (diff < 0) diff = -diff
+        if (diff > eps) { printf "FAIL [geo]: stageW mismatch slice %d: %.4f vs %.4f: %s\n", i, sw_arr[i], ref_sw, slice_lines[i]; fail = 1 }
+        diff = sh_arr[i] - ref_sh; if (diff < 0) diff = -diff
+        if (diff > eps) { printf "FAIL [geo]: stageH mismatch slice %d: %.4f vs %.4f: %s\n", i, sh_arr[i], ref_sh, slice_lines[i]; fail = 1 }
+    }
+    union_w = union_maxX - union_minX; union_h = union_maxY - union_minY
+    diff = ref_sw - union_w; if (diff < 0) diff = -diff
+    if (diff > eps) { printf "FAIL [geo]: stageW %.4f != recomputed union_w %.4f\n", ref_sw, union_w; fail = 1 }
+    diff = ref_sh - union_h; if (diff < 0) diff = -diff
+    if (diff > eps) { printf "FAIL [geo]: stageH %.4f != recomputed union_h %.4f\n", ref_sh, union_h; fail = 1 }
+    min_ox = ox_arr[1]; min_oy = oy_arr[1]
+    for (i = 1; i <= sc; i++) {
+        expected_ox = fx_arr[i] - union_minX
+        expected_oy = union_maxY - (fy_arr[i] + fh_arr[i])
+        diff = ox_arr[i] - expected_ox; if (diff < 0) diff = -diff
+        if (diff > eps) { printf "FAIL [geo]: slice %d offX %.4f != expected %.4f: %s\n", i, ox_arr[i], expected_ox, slice_lines[i]; fail = 1 }
+        diff = oy_arr[i] - expected_oy; if (diff < 0) diff = -diff
+        if (diff > eps) { printf "FAIL [geo]: slice %d offY %.4f != expected %.4f (union_maxY=%.4f fy=%.4f fh=%.4f): %s\n", i, oy_arr[i], expected_oy, union_maxY, fy_arr[i], fh_arr[i], slice_lines[i]; fail = 1 }
+        if (ox_arr[i] < min_ox) min_ox = ox_arr[i]
+        if (oy_arr[i] < min_oy) min_oy = oy_arr[i]
+    }
+    diff = min_ox; if (diff < 0) diff = -diff
+    if (diff > eps) { printf "FAIL [geo]: min(offX) = %.4f, expected 0\n", min_ox; fail = 1 }
+    diff = min_oy; if (diff < 0) diff = -diff
+    if (diff > eps) { printf "FAIL [geo]: min(offY) = %.4f, expected 0\n", min_oy; fail = 1 }
+    if (n == 1) {
+        diff = sw_arr[1] - fw_arr[1]; if (diff < 0) diff = -diff
+        if (diff > eps) { printf "FAIL [geo]: N=1 stageW %.4f != frame_w %.4f\n", sw_arr[1], fw_arr[1]; fail = 1 }
+        diff = sh_arr[1] - fh_arr[1]; if (diff < 0) diff = -diff
+        if (diff > eps) { printf "FAIL [geo]: N=1 stageH %.4f != frame_h %.4f\n", sh_arr[1], fh_arr[1]; fail = 1 }
+        diff = ox_arr[1]; if (diff < 0) diff = -diff
+        if (diff > eps) { printf "FAIL [geo]: N=1 offX %.4f != 0\n", ox_arr[1]; fail = 1 }
+        diff = oy_arr[1]; if (diff < 0) diff = -diff
+        if (diff > eps) { printf "FAIL [geo]: N=1 offY %.4f != 0\n", oy_arr[1]; fail = 1 }
+    }
+    for (i = 1; i <= sc; i++) {
+        win = win_arr[i]
+        if (win in web_w) {
+            diff = fw_arr[i] - web_w[win]; if (diff < 0) diff = -diff
+            if (diff > eps) { printf "FAIL [geo]: win=%s SLICE frame_w=%.4f != web frame_w=%d: %s\n", win, fw_arr[i], web_w[win], slice_lines[i]; fail = 1 }
+            diff = fh_arr[i] - web_h[win]; if (diff < 0) diff = -diff
+            if (diff > eps) { printf "FAIL [geo]: win=%s SLICE frame_h=%.4f != web frame_h=%d: %s\n", win, fh_arr[i], web_h[win], slice_lines[i]; fail = 1 }
+        } else {
+            printf "FAIL [geo]: win=%s from SLICE has no loaded=ok web line\n", win; fail = 1
+        }
+    }
+    if (!fail) printf "PASS [geo]: geometry oracle passed for %d display(s)\n", n
+    exit fail
+}
+' "$TMPOUT")"
+    GEO_EXIT=$?
+    echo "$GEO_OUT"
+    if [ $GEO_EXIT -ne 0 ] || echo "$GEO_OUT" | grep -q "^FAIL"; then
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+fi
+
 # --- Step 7c: verify SIGINT causes clean exit within ~1s ---
 echo "[sigint] Sending SIGINT..."
 kill -INT "$PID"

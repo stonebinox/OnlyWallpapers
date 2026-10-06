@@ -6,26 +6,28 @@ meant to be small and stable. Creative work happens in the web layer instead.
 
 Status: partially implemented. The process skeleton (`main.swift` and
 `AppDelegate`, ow-mbw.2) runs as a `.accessory` app, the production `WallpaperWindow`
-(ow-mbw.3) exists, and `WebWallpaperView` (ow-94b.1) now fills each window with a
-`WKWebView` loading a local page (a black-fallback stub for now). The
-`WallpaperController` (union geometry, display hot-plug) below is still planned
-(ow-blz.1), and the real looping-video page is ow-94b.2.
+(ow-mbw.3) exists, `WebWallpaperView` (ow-94b.1) fills each window with a `WKWebView`
+playing the real looping-video page (ow-94b.2), and the `WallpaperController`
+(ow-blz.1) now owns the per-screen windows and computes the union canvas + per-screen
+slice geometry. Still planned: injecting that geometry into the web layer and the CSS
+slice transform (ow-blz.2), and the display hot-plug rebuild (ow-blz.3).
 
 ## Components
 - **main.swift**: sets up `NSApplication`, activation policy `.accessory` (no Dock
   icon, a background utility, no Info.plist needed), runs the app.
 - **AppDelegate**: sets the accessory policy, installs the SIGINT handler, and (in
-  the default run) creates one `WallpaperWindow` per `NSScreen.screens`, each with a
-  `WebWallpaperView` content view (ow-94b.1). It resolves the web dir via a
-  `#filePath` dev path for now (`WALLPAPER_WEB_DIR` and bundled resources come in
-  ow-94b.3). Rebuilding on `NSApplication.didChangeScreenParametersNotification` is
-  planned (ow-blz.1), and the per-screen bootstrap moves into `WallpaperController`
-  then.
-- **WallpaperController** (planned, ow-blz.1): the geometry brain. Builds the union
-  of all `NSScreen.screens` frames (one logical canvas), derives each screen's slice
-  offset, owns the per-screen windows, and rebuilds on display hot-plug. Will resolve
-  the web asset directory (env `WALLPAPER_WEB_DIR` override, else the bundled copy)
-  via ow-94b.3.
+  the default run) creates a `WallpaperController` and calls `build()`. It no longer
+  creates windows itself.
+- **WallpaperController** (ow-blz.1, done): the geometry brain. On `build()` it
+  snapshots `NSScreen.screens`, computes the union canvas and each screen's slice
+  geometry (a pure `nonisolated computeLayout([CGRect])`: `offX = minX - union.minX`,
+  `offY = union.maxY - screen.maxY`, points, union seeded from `CGRect.null`), creates
+  and owns one `WallpaperWindow` per screen (each window stays at `screen.frame`; the
+  slice `offX/offY` are data only, never applied to any AppKit rect), passes the web
+  dir (`#filePath` dev path for now; `WALLPAPER_WEB_DIR` + `Bundle.module` are
+  ow-94b.3), and logs the geometry. Records are stored by `CGDirectDisplayID` (not
+  `NSScreen`). Injecting the geometry into the web layer is ow-blz.2; the display
+  hot-plug rebuild is ow-blz.3 (a flicker-safe swap, not a destructive teardown).
 - **WallpaperWindow** (ow-mbw.3, done): a `final NSWindow` subclass, borderless at
   the desktop level, content-agnostic (holds whatever content view it is given),
   `canBecomeKey`/`canBecomeMain` false. The desktop-layer trick lives here. It holds

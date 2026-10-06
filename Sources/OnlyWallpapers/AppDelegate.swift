@@ -5,8 +5,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Retained for the process lifetime; SIGINT terminates the app cleanly.
     private var sigintSource: DispatchSourceSignal?
 
-    // Production wallpaper windows, one per screen (default run).
-    private var wallpaperWindows: [WallpaperWindow] = []
+    // Retained for the process lifetime. A future rebuild (ow-blz.3) will tear down and recreate windows.
+    private var wallpaperController: WallpaperController?
 
     // WebSpike: activity token and controllers kept alive for the process lifetime.
     // AnyObject avoids importing WebKit in this file.
@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sigintSource = src
     }
 
-    // The wallpaper must survive window close/rebuild (ow-blz.1 rebuilds on display change).
+    // The wallpaper must survive window close/rebuild. A future rebuild (ow-blz.3) will tear down and recreate windows.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -80,27 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } else {
-            // Default production path: one WallpaperWindow per screen.
-            let webDir = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .appendingPathComponent("web", isDirectory: true)
-                .standardizedFileURL
-            let screens = NSScreen.screens
-            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WINDOWS count=\(screens.count)\n".utf8))
-            for screen in screens {
-                let webView = WebWallpaperView(
-                    frame: NSRect(origin: .zero, size: screen.frame.size),
-                    webDirectory: webDir,
-                    screenName: screen.localizedName
-                )
-                let win = WallpaperWindow(screen: screen, contentView: webView)
-                wallpaperWindows.append(win)
-                win.orderFrontRegardless()
-                let name = screen.localizedName
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
-                    win?.logPlacement(screenName: name)
-                }
-            }
+            // Default production path: WallpaperController spans all screens.
+            let controller = WallpaperController()
+            controller.build()
+            self.wallpaperController = controller
         }
     }
 }

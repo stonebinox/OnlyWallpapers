@@ -65,13 +65,19 @@ Last updated: 2026-10-05
   `systems/web-render/webview-video-spike-findings.md`. Open follow-up: multi-display
   slice sync across pause/resume (ow-blz.5).
 
+- ow-blz.1 (done): the `WallpaperController` owns the per-screen windows and computes
+  the union canvas + per-screen slice geometry (`offX`, and the bottom-left to
+  top-left `offY` flip), in points, logged and smoke-verified (a recompute oracle).
+  The geometry is data only (windows stay at `screen.frame`); nothing spans visually
+  yet. Pure `computeLayout([CGRect])` is ready for ow-blz.4 unit tests.
+
 ### Next Step
-ow-blz.1 (WallpaperController: union canvas and per-screen slice geometry, taking
-over per-screen window creation and display hot-plug) and ow-blz.2 (inject the slice
-transform into the web layer so the one video spans all displays). ow-94b.3 adds
-WALLPAPER_WEB_DIR + Bundle.module web-dir resolution; ow-94b.4 sources a real sample
-video; ow-mbw.4 adds the fuller window-config run check. Retiring the env-gated
-webspike A/B is a deferred cleanup (not yet done).
+ow-blz.2 (inject the slice geometry into the web layer + the CSS stage transform, so
+the one video spans all displays, each showing its slice) and ow-blz.3 (rebuild the
+windows on display hot-plug, a flicker-safe swap). ow-blz.4 adds geometry unit tests.
+ow-94b.3 adds WALLPAPER_WEB_DIR + Bundle.module web-dir resolution; ow-94b.4 sources a
+real sample video; ow-mbw.4 adds the fuller window-config run check. Retiring the
+env-gated webspike A/B is a deferred cleanup.
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

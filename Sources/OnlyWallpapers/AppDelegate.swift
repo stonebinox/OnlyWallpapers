@@ -12,10 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // AnyObject avoids importing WebKit in this file.
     private var spikeActivity: NSObjectProtocol?
     private var webSpikeControllers: [AnyObject] = []
+    private var statusItemController: StatusItemController?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        let ok = NSApp.setActivationPolicy(.accessory)
-        precondition(ok, "failed to set .accessory activation policy")
+        if NSApp.activationPolicy() != .accessory {
+            let ok = NSApp.setActivationPolicy(.accessory)
+            precondition(ok, "failed to set .accessory activation policy")
+        }
 
         // Install SIGINT handler before announcing readiness so no window exists
         // where the default disposition (exit 130) can fire.
@@ -84,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let controller = WallpaperController()
             controller.build()
             self.wallpaperController = controller
+            statusItemController = StatusItemController()
         }
     }
 }

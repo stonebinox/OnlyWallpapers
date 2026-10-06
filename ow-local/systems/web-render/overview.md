@@ -1,8 +1,9 @@
 # System: Web Render Layer
 
 Where the wallpaper actually looks like something. The native shell loads this
-local page into a transparent WKWebView per screen. All visual control lives here
-and can be edited without recompiling Swift.
+local page into a per-screen WKWebView (the base is opaque with a black fallback on
+macOS 26, see Transparency; the full-bleed video covers it). All visual control lives
+here and can be edited without recompiling Swift.
 
 Status: partially implemented. `WebWallpaperView` (ow-94b.1) is a `WKWebView`
 subclass used as the WallpaperWindow content view, loading the local page via

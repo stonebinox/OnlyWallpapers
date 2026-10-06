@@ -9,14 +9,17 @@ Status: partially implemented. The process skeleton (`main.swift` and
 (ow-mbw.3) exists, `WebWallpaperView` (ow-94b.1) fills each window with a `WKWebView`
 playing the real looping-video page (ow-94b.2), and the `WallpaperController`
 (ow-blz.1) now owns the per-screen windows and computes the union canvas + per-screen
-slice geometry. The per-screen slice geometry is now injected into the web layer and applied by left/top positioning (ow-blz.2). Still planned: the display hot-plug rebuild (ow-blz.3).
+slice geometry. The per-screen slice geometry is now injected into the web layer and applied by left/top positioning (ow-blz.2). The app can be packaged as a standalone, unsigned `.app` with a menu-bar Quit item (ow-aad.5). Still planned: the display hot-plug rebuild (ow-blz.3) and launch at login (ow-aad.3).
 
 ## Components
 - **main.swift**: sets up `NSApplication`, activation policy `.accessory` (no Dock
-  icon, a background utility, no Info.plist needed), runs the app.
-- **AppDelegate**: sets the accessory policy, installs the SIGINT handler, and (in
-  the default run) creates a `WallpaperController` and calls `build()`. It no longer
-  creates windows itself.
+  icon, a background utility). The bare `swift run` binary needs no Info.plist; the
+  packaged `.app` ships one with `LSUIElement` (see Packaging).
+- **AppDelegate**: sets the accessory policy (guarded: it only calls
+  `setActivationPolicy(.accessory)` when not already accessory, since `LSUIElement`
+  sets it pre-launch in the `.app`), installs the SIGINT handler, and (in the default
+  run) creates a `WallpaperController`, calls `build()`, and creates the
+  `StatusItemController`. It no longer creates windows itself.
 - **WallpaperController** (ow-blz.1, done): the geometry brain. On `build()` it
   snapshots `NSScreen.screens`, computes the union canvas and each screen's slice
   geometry (a pure `nonisolated computeLayout([CGRect])`: `offX = minX - union.minX`,
@@ -39,6 +42,11 @@ slice geometry. The per-screen slice geometry is now injected into the web layer
   (`window.__wallpaper`) via a document-start `WKUserScript` (ow-blz.2) and logs a
   `getBoundingClientRect`-based applied read-back. Loads the real looping-video page
   (ow-94b.2).
+- **StatusItemController** (ow-aad.5, done): a minimal menu-bar `NSStatusItem`
+  (template SF Symbol) with a disabled title and a "Quit OnlyWallpapers" item that
+  calls `NSApp.terminate`. Created only in the default production path and retained by
+  `AppDelegate`. Logs `ONLYWALLPAPERS_STATUSITEM created=<bool>`. It is the only way
+  to quit the installed accessory app without Activity Monitor.
 
 ## The Desktop-Layer Trick
 A normal window becomes a wallpaper with these settings:
@@ -82,6 +90,25 @@ job. NOTE: the env-gated webspike path in `AppDelegate` reads `WALLPAPER_WEB_DIR
 under its OWN older contract (it also requires `bg.mp4`, and silently falls back to
 `.build/webspike`); the fail-fast resolution above applies only to the default,
 non-webspike path.
+
+## Packaging (ow-aad.5, done)
+`scripts/package-app.sh` produces a standalone, local, UNSIGNED `dist/OnlyWallpapers.app`:
+`swift build -c release`, then the binary into `Contents/MacOS/` and an `Info.plist`
+(CFBundle* + `LSMinimumSystemVersion 14.0` + `LSUIElement true`) into `Contents/`.
+CRUX: the SwiftPM resource bundle goes at the `.app` ROOT
+(`OnlyWallpapers.app/OnlyWallpapers_OnlyWallpapers.bundle`), NOT `Contents/Resources`
+and NOT `Contents/MacOS`, because the synthesized `Bundle.module` accessor resolves
+via `Bundle.main.bundleURL.appendingPathComponent("OnlyWallpapers_OnlyWallpapers.bundle")`
+and for a `.app` `Bundle.main.bundleURL` is the `.app` root (verified from the generated
+`resource_bundle_accessor.swift`; it also has a HARDCODED `.build` fallback, so the
+gate must prove the app resolves inside its OWN bundle, not `.build`). `scripts/package-check.sh`
+is the gate: it copies the `.app` to a temp dir outside the repo, runs it with cwd
+outside the tree, and asserts `source=bundle` with the resolved dir INSIDE the temp
+`.app`, plus `policy=accessory`, the status item, and per-screen `loaded=ok`. Unsigned
+local builds have no quarantine so they run without a Gatekeeper prompt (an
+`xattr -dr com.apple.quarantine` escape hatch is documented for transferred copies).
+arm64 only; the binary links only the OS Swift runtime (`/usr/lib/swift`), so no dylib
+bundling. Launch at login is separate (ow-aad.3).
 
 ## Open Questions
 - Does a desktop-level window need any extra handling under Stage Manager?

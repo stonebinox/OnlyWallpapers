@@ -117,11 +117,14 @@ OnlyWallpapers/
 ├── Sources/OnlyWallpapers/
 │   ├── main.swift  AppDelegate.swift
 │   ├── WallpaperController.swift     # NSScreen union -> per-screen slice geometry
+│   ├── WebDirectoryResolver.swift    # WALLPAPER_WEB_DIR else Bundle.module (ow-94b.3)
+│   ├── StatusItemController.swift    # menu-bar icon + Quit (ow-aad.5)
 │   ├── WallpaperWindow.swift         # borderless desktop-layer, click-through window
-│   ├── WebWallpaperView.swift        # WKWebView (transparent, local file access)
+│   ├── WebWallpaperView.swift        # WKWebView (opaque base + black fallback, local file access)
 │   └── web/                          # render layer; hot-editable via WALLPAPER_WEB_DIR
 │       ├── index.html  style.css  wallpaper.js
 │       └── assets/                   # bg.mp4 etc (gitignored)
+├── scripts/                          # smoke-run, webdir-check, package-app, package-check
 └── ow-local/                         # knowledge repo (folder, same git history)
 ```
 
@@ -129,6 +132,7 @@ OnlyWallpapers/
 - Build: `swift build`
 - Run: `swift run OnlyWallpapers`
 - Live-edit web without rebuild: `WALLPAPER_WEB_DIR=$PWD/Sources/OnlyWallpapers/web swift run OnlyWallpapers`
+- Package a standalone app: `scripts/package-app.sh` produces `dist/OnlyWallpapers.app` (ow-aad.5)
 
 ## Testing
 Every code change ships with tests. UI/visual behavior is verified in Phase 5.

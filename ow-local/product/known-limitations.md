@@ -32,6 +32,18 @@ Trade-offs we have accepted, with the reason. Revisit these as the project grows
 ## Platform
 - **No persistence or settings UI.** Which video, moods, and options are set in the
   web layer and env vars for now.
-- **Launch at login not wired up.** Manual run for now.
+- **Unsigned, local, arm64 only (ow-aad.5).** The packaged `OnlyWallpapers.app` is
+  built locally and unsigned (App Store distribution and Developer ID signing are
+  non-goals). A locally built, non-downloaded app has no quarantine so it runs without
+  a Gatekeeper prompt; a copy that is zipped or AirDropped needs
+  `xattr -dr com.apple.quarantine`. The binary is arm64 (Apple Silicon); no universal
+  build.
+- **Setting a video in the installed app is clunky.** A double-clicked `.app` gets no
+  shell environment, so `WALLPAPER_WEB_DIR` only helps when launched from a terminal.
+  In the installed app you drop `bg.mp4` inside the bundle
+  (`OnlyWallpapers.app/OnlyWallpapers_OnlyWallpapers.bundle/web/assets/`) or re-run the
+  package script. A friendlier fixed location is deferred to ow-aqx.2.
+- **Launch at login not wired up.** Manual run for now (ow-aad.3). The menu-bar Quit
+  item (ow-aad.5) is the only in-app way to stop it.
 - **Autoplay quirk.** The `<video>` must be `muted` + `playsinline` with a JS
   `.play()` kick or it will not start on its own.

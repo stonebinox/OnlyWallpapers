@@ -20,6 +20,9 @@ Sources/OnlyWallpapers/web/webspike/*.mp4
 # Scratch output from Codex/Grok/Sonnet runs
 /tmp/ow-*.md
 
+# Built .app bundles (binary + any gitignored video assets)
+dist/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

@@ -29,7 +29,9 @@ control and can hack on.
 3. Live control of the look from the web layer with fast iteration.
 
 ## Non-Goals (for now)
-- A GUI settings app or menu-bar controls.
+- A GUI settings app. (A minimal menu-bar status item with a Quit command exists as
+  of ow-aad.5 so the packaged accessory app can be managed and quit; a full controls
+  UI remains out of scope.)
 - App Store distribution and code signing.
 - Bezel-gap correction between monitors.
 - Per-screen independent wallpapers (we are doing one spanned canvas first).

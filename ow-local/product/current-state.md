@@ -88,13 +88,27 @@ Last updated: 2026-10-06
   one `loaded=ok` per screen, no `loaded=fail`), plus override-fail and
   relative-override (fail-fast, nonzero exit, no window created), and bundle hygiene.
   Unblocks packaging (ow-aad.5).
+- ow-aad.5 (done): the app packages as a standalone, local, UNSIGNED
+  `dist/OnlyWallpapers.app` via `scripts/package-app.sh`, with a menu-bar status item
+  (SF Symbol) whose Quit item terminates the app. The SwiftPM resource bundle is
+  placed at the `.app` ROOT (where the generated `Bundle.module` accessor looks;
+  Contents/Resources would not be found). `AppDelegate` now guards
+  `setActivationPolicy(.accessory)` (the `.app` sets it via `LSUIElement` pre-launch).
+  Gate `scripts/package-check.sh` copies the `.app` to a temp dir outside the repo,
+  runs it with cwd outside the tree, and proves it resolves `source=bundle` from
+  INSIDE its own bundle (not `.build`), with `policy=accessory`, the status item, and
+  per-screen `loaded=ok`, then a clean SIGINT and no orphan process. Unsigned/local,
+  arm64 only. To set a video in the installed app: drop `bg.mp4` into the bundle or
+  re-run the package script (a friendlier path is ow-aqx.2). Launch at login is
+  ow-aad.3.
 
 ### Next Step
-ow-aad.5 packages a standalone `.app` (now unblocked by ow-94b.3). ow-blz.3 (rebuild
-the windows on display hot-plug, a flicker-safe swap) and ow-blz.4 (geometry unit
-tests, the Y-flip cases the aligned hardware cannot exercise). ow-94b.4 sources a real
-sample video; ow-mbw.4 adds the fuller window-config run check; ow-blz.5 handles slice
-sync. Retiring the env-gated webspike A/B is a deferred cleanup.
+ow-aad.3 (launch at login) makes the packaged `.app` auto-start, and ow-aad.1 verifies
+the lock/unlock, sleep/wake, screensaver, and Spaces behavior on the real machine.
+ow-blz.3 (rebuild the windows on display hot-plug, a flicker-safe swap) and ow-blz.4
+(geometry unit tests, the Y-flip cases the aligned hardware cannot exercise). ow-94b.4
+sources a real sample video; ow-mbw.4 adds the fuller window-config run check; ow-blz.5
+handles slice sync. Retiring the env-gated webspike A/B is a deferred cleanup.
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

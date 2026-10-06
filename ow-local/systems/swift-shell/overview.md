@@ -111,6 +111,13 @@ local builds have no quarantine so they run without a Gatekeeper prompt (an
 arm64 only; the binary links only the OS Swift runtime (`/usr/lib/swift`), so no dylib
 bundling. Launch at login is separate (ow-aad.3).
 
+## Lifecycle (verified, ow-aad.1)
+Lock/unlock, sleep/wake, and screensaver all behave correctly on real hardware: the
+desktop-layer wallpaper is not drawn on the lock screen or over the screensaver (the
+system surfaces sit above it), the app survives the event, and the wallpaper + video
+return cleanly on unlock/wake/dismiss with no black flash or freeze. The brief
+old-wallpaper flash during Space/full-screen transitions is the separate ow-aad.4.
+
 ## Open Questions
-- Does a desktop-level window need any extra handling under Stage Manager?
-- Behavior across fast user switching and lock/unlock.
+- Does a desktop-level window need any extra handling under Stage Manager? (ow-aad.2)
+- Fast user switching behavior (untested; low priority).

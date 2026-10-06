@@ -52,7 +52,8 @@ final class WallpaperController {
             let webView = WebWallpaperView(
                 frame: NSRect(origin: .zero, size: screen.frame.size),
                 webDirectory: webDir,
-                screenName: screen.localizedName
+                screenName: screen.localizedName,
+                geometry: geo
             )
             let win = WallpaperWindow(screen: screen, contentView: webView)
             win.orderFrontRegardless()

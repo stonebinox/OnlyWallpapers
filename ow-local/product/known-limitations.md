@@ -6,6 +6,18 @@ Trade-offs we have accepted, with the reason. Revisit these as the project grows
 - **N video decodes on N monitors.** Each screen gets its own window and WKWebView,
   so a spanned video is decoded once per screen. Fine for two or three displays on
   Apple Silicon. Revisit if it becomes a battery or thermal problem.
+- **N union-sized composited layers (ow-blz.2).** With spanning, each per-screen
+  WKWebView now composites a `#stage` the size of the WHOLE union canvas (not just
+  its screen), with the video filling it. So a 3-display arrangement composites three
+  union-wide filtered video layers, and a Retina display rasterizes the full union at
+  2x. Accepted for the two-display target; revisit if GPU, thermal, or memory shows up
+  in Phase 5. A single shared decoder is a later idea, not pursued here.
+- **Cover crop is computed in union space (ow-blz.2).** The base video uses
+  `object-fit: cover` against the union canvas, so an extreme union aspect ratio
+  (for example a 16:9 clip across a 32:9 span) keeps only a thin center band of the
+  source. The crop is continuous across the bezel, but the source content shown is a
+  band, not the whole frame. A different `object-position` or per-arrangement framing
+  is a future refinement.
 - **WKWebView video vs raw AVPlayer.** WKWebView uses hardware decode for `<video>`
   on Apple Silicon, but is slightly heavier than a bare AVPlayer. We accept the
   cost for the live-control flexibility of the web layer. See DEC-001.

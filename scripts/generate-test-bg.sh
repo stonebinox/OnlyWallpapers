@@ -24,9 +24,9 @@ done
 # drawtext frame counter in the center provides high-contrast per-frame change.
 # Comma-in-mod is avoided: timestamp (t) arithmetic is safe in drawbox x= values.
 if [[ -n "$FONTFILE" ]]; then
-    VF="drawtext=text='F%{n}':fontfile=$FONTFILE:fontsize=180:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2,drawbox=x=t*90:y=ih-240:w=200:h=200:color=lime@1.0:t=fill"
+    VF="drawtext=text='F%{n}':fontfile=$FONTFILE:fontsize=180:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2,drawbox=x=t*90:y=ih-240:w=200:h=200:color=lime@1.0:t=fill,drawbox=x=iw/2-2:y=0:w=4:h=ih:color=white@1.0:t=fill,drawbox=x=0:y=ih/2-2:w=iw:h=4:color=white@1.0:t=fill"
 else
-    VF="drawbox=x=t*90:y=0:w=200:h=200:color=lime@1.0:t=fill,drawbox=x=t*60:y=ih-200:w=120:h=120:color=red@1.0:t=fill"
+    VF="drawbox=x=t*90:y=0:w=200:h=200:color=lime@1.0:t=fill,drawbox=x=t*60:y=ih-200:w=120:h=120:color=red@1.0:t=fill,drawbox=x=iw/2-2:y=0:w=4:h=ih:color=white@1.0:t=fill,drawbox=x=0:y=ih/2-2:w=iw:h=4:color=white@1.0:t=fill"
 fi
 
 echo "[generate-test-bg] Generating $OUT ..."

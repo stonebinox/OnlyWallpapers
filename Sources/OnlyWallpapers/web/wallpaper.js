@@ -1,4 +1,22 @@
 (function () {
+  var stage = document.getElementById("stage");
+  if (!stage) return;
+  var g = window.__wallpaper;
+  function num(x) { return typeof x === "number" && isFinite(x); }
+  if (g && num(g.stageW) && num(g.stageH) && g.stageW > 0 && g.stageH > 0 && num(g.offX) && num(g.offY)) {
+    stage.style.left = (-g.offX) + "px";
+    stage.style.top = (-g.offY) + "px";
+    stage.style.width = g.stageW + "px";
+    stage.style.height = g.stageH + "px";
+    var r = stage.getBoundingClientRect();
+    window.__wallpaperApplied = { left: r.left, top: r.top, width: r.width, height: r.height };
+  } else {
+    var r = stage.getBoundingClientRect();
+    window.__wallpaperApplied = { left: r.left, top: r.top, width: r.width, height: r.height };
+  }
+})();
+
+(function () {
   "use strict";
   var video = document.getElementById("bg");
   if (!video) return;

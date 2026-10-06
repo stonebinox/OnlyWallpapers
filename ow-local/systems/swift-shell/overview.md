@@ -9,8 +9,7 @@ Status: partially implemented. The process skeleton (`main.swift` and
 (ow-mbw.3) exists, `WebWallpaperView` (ow-94b.1) fills each window with a `WKWebView`
 playing the real looping-video page (ow-94b.2), and the `WallpaperController`
 (ow-blz.1) now owns the per-screen windows and computes the union canvas + per-screen
-slice geometry. Still planned: injecting that geometry into the web layer and the CSS
-slice transform (ow-blz.2), and the display hot-plug rebuild (ow-blz.3).
+slice geometry. The per-screen slice geometry is now injected into the web layer and applied by left/top positioning (ow-blz.2). Still planned: the display hot-plug rebuild (ow-blz.3).
 
 ## Components
 - **main.swift**: sets up `NSApplication`, activation policy `.accessory` (no Dock
@@ -26,8 +25,7 @@ slice transform (ow-blz.2), and the display hot-plug rebuild (ow-blz.3).
   slice `offX/offY` are data only, never applied to any AppKit rect), passes the web
   dir (`#filePath` dev path for now; `WALLPAPER_WEB_DIR` + `Bundle.module` are
   ow-94b.3), and logs the geometry. Records are stored by `CGDirectDisplayID` (not
-  `NSScreen`). Injecting the geometry into the web layer is ow-blz.2; the display
-  hot-plug rebuild is ow-blz.3 (a flicker-safe swap, not a destructive teardown).
+  `NSScreen`). Injecting the geometry into the web layer (via a document-start WKUserScript) is done (ow-blz.2); the display hot-plug rebuild is ow-blz.3 (a flicker-safe swap, not a destructive teardown).
 - **WallpaperWindow** (ow-mbw.3, done): a `final NSWindow` subclass, borderless at
   the desktop level, content-agnostic (holds whatever content view it is given),
   `canBecomeKey`/`canBecomeMain` false. The desktop-layer trick lives here. It holds
@@ -37,8 +35,10 @@ slice transform (ow-blz.2), and the display hot-plug rebuild (ow-blz.3).
   (`mediaTypesRequiringUserActionForPlayback = []`) and loads a local page via
   `loadFileURL(_:allowingReadAccessTo:)` (read root is the directory). Base is opaque
   on macOS 26 via public API (black CSS fallback; true transparency deferred, see
-  web-render overview and ow-aqx.4). Slice-geometry injection is added in ow-blz.1.
-  Currently loads a stub page; ow-94b.2 adds the real looping-video page.
+  web-render overview and ow-aqx.4). It injects the per-screen slice geometry
+  (`window.__wallpaper`) via a document-start `WKUserScript` (ow-blz.2) and logs a
+  `getBoundingClientRect`-based applied read-back. Loads the real looping-video page
+  (ow-94b.2).
 
 ## The Desktop-Layer Trick
 A normal window becomes a wallpaper with these settings:

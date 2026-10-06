@@ -7,9 +7,11 @@ and can be edited without recompiling Swift.
 Status: partially implemented. `WebWallpaperView` (ow-94b.1) is a `WKWebView`
 subclass used as the WallpaperWindow content view, loading the local page via
 `loadFileURL`. The real looping-video page (ow-94b.2) is now in place: a looping
-muted video fills the window and starts on its own, with a black fallback. Still
-planned: the slice transform (ow-blz.2, so each screen shows its slice of a spanned
-canvas) and the asset-dir resolution (ow-94b.3, WALLPAPER_WEB_DIR + Bundle.module).
+muted video fills the window and starts on its own, with a black fallback. The slice
+positioning (ow-blz.2) is in place: the one video is sliced across all displays via
+injected per-screen geometry and `left/top` positioning of `#stage`. Still planned:
+the asset-dir resolution (ow-94b.3, WALLPAPER_WEB_DIR + Bundle.module) and mood logic
+(Epic D).
 
 ## Files
 - **index.html**: a `#stage` containing the `<video id="bg">` (muted, playsinline,
@@ -18,20 +20,29 @@ canvas) and the asset-dir resolution (ow-94b.3, WALLPAPER_WEB_DIR + Bundle.modul
   (currently `brightness(1.01)`, the validated recomposite path) is the live-control
   knob for the look (saturate, brightness, hue-rotate, blur). Black fallback until
   the video decodes (the WKWebView base is opaque on macOS 26, see Transparency).
-- **wallpaper.js**: kicks off autoplay (synchronous `play()` plus retries on
-  `canplay` / `loadeddata`, and an `ended` belt). It does NOT yet read slice geometry
-  or run mood logic: those are ow-blz.2 and Epic D.
+- **wallpaper.js**: two IIFEs. A geometry IIFE reads `window.__wallpaper` and
+  positions `#stage` by `left/top` to this screen's slice (recording the real applied
+  rect in `window.__wallpaperApplied`); then an autoplay IIFE kicks `play()` with
+  `canplay`/`loadeddata` retries and an `ended` belt. Mood logic is still Epic D.
 
-## The Slice Transform (planned, ow-blz.2)
-The shell will inject, at document start:
+## The Slice Transform (ow-blz.2, done)
+The shell injects, at document start, a per-screen payload via a `WKUserScript`:
 ```js
 window.__wallpaper = { stageW, stageH, offX, offY }
 ```
-`wallpaper.js` then:
+`wallpaper.js` then (in a geometry IIFE separate from the autoplay IIFE):
 - sizes `#stage` to the full canvas: `width = stageW`, `height = stageH`;
-- shifts it so this screen shows only its slice:
-  `transform: translate(-offX px, -offY px)`.
-Each screen's window is screen-sized; the oversized stage is scrolled under it.
+- shifts it so this screen shows only its slice by POSITIONING, not a transform:
+  `#stage { position: fixed; left: -offX px; top: -offY px }`.
+We use `left`/`top` rather than `transform: translate` on purpose: an ancestor
+`transform` on the `<video>` parent can blank or freeze the hardware video layer.
+The video fills `#stage` (the union size), so `object-fit: cover` crops the image
+ONCE in union space and each screen shows an adjacent slice (continuous across the
+bezel). Each screen's window stays screen-sized (`screen.frame`); the offsets are
+data only, never applied to any AppKit rect; `overflow: hidden` clips the oversized
+stage to the viewport. Verification: the native `ONLYWALLPAPERS_WEB applied` log
+(read from `getBoundingClientRect` on `#stage`) asserts `left == -offX` per screen.
+Temporal frame sync across displays is a separate concern (ow-blz.5).
 
 ## Autoplay
 The `<video>` needs `muted` + `playsinline` and an explicit `.play()` call (retried

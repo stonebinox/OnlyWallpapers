@@ -51,10 +51,10 @@ Last updated: 2026-10-05
   because -l is flaky under occlusion culling).
 
 ### Not Done
-- Remaining Swift sources: `WallpaperController` (ow-blz.1).
 - A real sample `bg.mp4` in `web/assets/` (ow-94b.4; a generated test clip is used now).
 - Asset-dir resolution: WALLPAPER_WEB_DIR + Bundle.module (ow-94b.3).
-- The spanned-canvas slice transform (ow-blz.2); retiring the webspike (deferred).
+- Rebuild on display hot-plug (ow-blz.3); geometry unit tests (ow-blz.4); slice sync
+  across pause/resume (ow-blz.5); retiring the webspike (deferred).
 
 ### Also de-risked
 - ow-94b.5 (done): a looping `<video>` in a transparent WKWebView at the desktop
@@ -67,16 +67,22 @@ Last updated: 2026-10-05
 
 - ow-blz.1 (done): the `WallpaperController` owns the per-screen windows and computes
   the union canvas + per-screen slice geometry (`offX`, and the bottom-left to
-  top-left `offY` flip), in points, logged and smoke-verified (a recompute oracle).
-  The geometry is data only (windows stay at `screen.frame`); nothing spans visually
-  yet. Pure `computeLayout([CGRect])` is ready for ow-blz.4 unit tests.
+  top-left `offY` flip), in points. Pure `computeLayout([CGRect])` is ready for
+  ow-blz.4 unit tests.
+- ow-blz.2 (done): the per-screen geometry is injected into the web layer
+  (`window.__wallpaper` via a document-start `WKUserScript`) and `wallpaper.js`
+  positions `#stage` (the union-sized canvas) by `left/top` so each screen shows its
+  slice of the ONE video (not N independent copies). We use `left/top` not a CSS
+  transform (a transform on the video parent can blank the hardware layer). Verified:
+  the native applied read-back (`getBoundingClientRect` on `#stage`) shows `left ==
+  -offX` per screen (e.g. the right display at `left=-3840` on a 7680 union). Temporal
+  frame sync across displays is still open (ow-blz.5).
 
 ### Next Step
-ow-blz.2 (inject the slice geometry into the web layer + the CSS stage transform, so
-the one video spans all displays, each showing its slice) and ow-blz.3 (rebuild the
-windows on display hot-plug, a flicker-safe swap). ow-blz.4 adds geometry unit tests.
-ow-94b.3 adds WALLPAPER_WEB_DIR + Bundle.module web-dir resolution; ow-94b.4 sources a
-real sample video; ow-mbw.4 adds the fuller window-config run check. Retiring the
+ow-blz.3 (rebuild the windows on display hot-plug, a flicker-safe swap) and ow-blz.4
+(geometry unit tests, the Y-flip cases the aligned hardware cannot exercise). ow-94b.3
+adds WALLPAPER_WEB_DIR + Bundle.module; ow-94b.4 sources a real sample video; ow-mbw.4
+adds the fuller window-config run check; ow-blz.5 handles slice sync. Retiring the
 env-gated webspike A/B is a deferred cleanup.
 
 ### Decisions So Far

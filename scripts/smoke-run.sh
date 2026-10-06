@@ -57,6 +57,9 @@ check_contains "$WEB_DIR/style.css"  'object-fit'         'object-fit in style.c
 check_contains "$WEB_DIR/style.css"  'filter'             'filter in style.css'
 check_contains "$WEB_DIR/style.css"  '#bg'                '#bg in style.css'
 check_contains "$WEB_DIR/wallpaper.js" 'video\.play'      'video.play in wallpaper.js'
+check_contains "$WEB_DIR/wallpaper.js" '__wallpaper'       '__wallpaper in wallpaper.js'
+check_contains "$WEB_DIR/wallpaper.js" 'stage\.style'      'stage.style in wallpaper.js'
+check_contains "$WEB_DIR/style.css"    'position.*fixed'   'position: fixed in style.css'
 
 if [[ $SHAPE_FAIL -ne 0 ]]; then
     exit 1
@@ -458,6 +461,116 @@ END {
     GEO_EXIT=$?
     echo "$GEO_OUT"
     if [ $GEO_EXIT -ne 0 ] || echo "$GEO_OUT" | grep -q "^FAIL"; then
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+fi
+
+# --- Step 7e: applied oracle (geometry injected AND applied by wallpaper.js) ---
+echo "[applied] Checking ONLYWALLPAPERS_WEB applied lines (up to 3s)..."
+if [ "$SCREEN_COUNT" -eq 0 ]; then
+    echo "[applied] PASS: count=0, no applied assertions needed"
+else
+    # Poll up to 3s for N applied lines.
+    for i in $(seq 1 30); do
+        APPLIED_COUNT="$(grep -c 'ONLYWALLPAPERS_WEB applied win=' "$TMPOUT" 2>/dev/null || true)"
+        if [ "$APPLIED_COUNT" -ge "$SCREEN_COUNT" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    # Hard fail on any applied=fail line before running awk.
+    FAIL_APPLIED="$(grep 'ONLYWALLPAPERS_WEB applied win=' "$TMPOUT" | grep 'applied=fail' || true)"
+    if [ -n "$FAIL_APPLIED" ]; then
+        echo "FAIL: applied=fail found in applied lines:"
+        echo "$FAIL_APPLIED"
+        echo "--- output ---"
+        cat "$TMPOUT" || true
+        exit 1
+    fi
+
+    APPLIED_OUT="$(awk '
+BEGIN { n = 0; eps = 0.5; fail = 0 }
+
+/^ONLYWALLPAPERS_WINDOWS count=/ {
+    split($2, a, "="); n = int(a[2])
+}
+
+/^ONLYWALLPAPERS_SLICE / {
+    split($3, a, "="); win = a[2]
+    split($5, a, "="); sw = a[2]+0
+    split($6, a, "="); sh = a[2]+0
+    split($7, a, "="); ox = a[2]+0
+    split($8, a, "="); oy = a[2]+0
+    slice_exists[win] = 1
+    slice_ox[win] = ox
+    slice_oy[win] = oy
+    slice_sw[win] = sw
+    slice_sh[win] = sh
+}
+
+/ONLYWALLPAPERS_WEB applied win=/ {
+    if ($0 ~ /applied=fail/) next
+    split($3, a, "="); win = a[2]
+    split($4, a, "="); l = a[2]+0
+    split($5, a, "="); t = a[2]+0
+    split($6, a, "="); w = a[2]+0
+    split($7, a, "="); h = a[2]+0
+    applied_wins[win] = 1
+    applied_l[win] = l
+    applied_t[win] = t
+    applied_w[win] = w
+    applied_h[win] = h
+}
+
+END {
+    napplied = 0
+    for (w in applied_wins) napplied++
+    if (napplied < n) {
+        printf "FAIL [applied]: expected %d distinct applied win= lines, found %d\n", n, napplied
+        fail = 1
+    }
+    for (win in applied_wins) {
+        if (!(win in slice_exists)) {
+            printf "FAIL [applied]: applied win=%s has no matching SLICE line\n", win
+            fail = 1
+            continue
+        }
+        exp_left = -slice_ox[win]
+        exp_top  = -slice_oy[win]
+        exp_w    = slice_sw[win]
+        exp_h    = slice_sh[win]
+
+        diff = applied_l[win] - exp_left; if (diff < 0) diff = -diff
+        if (diff > eps) {
+            printf "FAIL [applied]: win=%s left=%.4f expected %.4f (=-offX=%.4f)\n", win, applied_l[win], exp_left, slice_ox[win]
+            fail = 1
+        }
+        diff = applied_t[win] - exp_top; if (diff < 0) diff = -diff
+        if (diff > eps) {
+            printf "FAIL [applied]: win=%s top=%.4f expected %.4f (=-offY=%.4f)\n", win, applied_t[win], exp_top, slice_oy[win]
+            fail = 1
+        }
+        diff = applied_w[win] - exp_w; if (diff < 0) diff = -diff
+        if (diff > eps) {
+            printf "FAIL [applied]: win=%s width=%.4f expected %.4f (=stageW)\n", win, applied_w[win], exp_w
+            fail = 1
+        }
+        diff = applied_h[win] - exp_h; if (diff < 0) diff = -diff
+        if (diff > eps) {
+            printf "FAIL [applied]: win=%s height=%.4f expected %.4f (=stageH)\n", win, applied_h[win], exp_h
+            fail = 1
+        }
+    }
+    if (!fail) printf "PASS [applied]: geometry applied for %d display(s)\n", n
+    exit fail
+}
+' "$TMPOUT")"
+    APPLIED_EXIT=$?
+    echo "$APPLIED_OUT"
+    if [ $APPLIED_EXIT -ne 0 ] || echo "$APPLIED_OUT" | grep -q "^FAIL"; then
         echo "--- output ---"
         cat "$TMPOUT" || true
         exit 1

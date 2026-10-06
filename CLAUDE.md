@@ -46,7 +46,7 @@ plan. Every code change runs all five phases. "It is one line" is not an excuse.
 2. In parallel, Opus asks Codex to co-scope **blind** (user's problem only):
    ```bash
    codex exec "Co-scope: <user's verbatim problem>. Do NOT edit any files. Output analysis only." \
-     --sandbox danger-full-access -m gpt-5.6-luna -o /tmp/ow-codex-scope.md 2>&1 < /dev/null
+     -c 'mcp_servers={}' --sandbox danger-full-access -m gpt-5.6-luna -o /tmp/ow-codex-scope.md 2>&1 < /dev/null
    ```
 3. Opus merges both into a single consensus plan at `/tmp/ow-consensus-plan.md`.
 4. Opus has Grok red-team the consensus (user's problem + the plan, nothing else):
@@ -72,7 +72,7 @@ codex exec "Review the changes for <bd task>. Run 'git diff'. Do NOT edit any fi
 BLAST RADIUS (MANDATORY): for every changed file find all callers/consumers/dependents; flag any that should have changed but did not. BLOCKING.
 TEST ADEQUACY (MANDATORY): would the tests fail if the code were subtly wrong, or do they only restate predicates?
 Categorize findings BLOCKING / NON-BLOCKING with file:line." \
-  --sandbox danger-full-access -m gpt-5.6-luna -o /tmp/ow-codex-review.md 2>&1 < /dev/null
+  -c 'mcp_servers={}' --sandbox danger-full-access -m gpt-5.6-luna -o /tmp/ow-codex-review.md 2>&1 < /dev/null
 ```
 Do NOT tell Codex what changed or what to look for. Just the task id.
 
@@ -105,7 +105,12 @@ Codex and Grok are valuable only if independent. Filter every prompt:
 | Grok | red-team the plan | grok-4.6 | never |
 
 Every Codex/Grok prompt must contain "Do NOT edit any files". Always end their
-commands with `2>&1 < /dev/null` (without it `codex exec` hangs and exits 144).
+commands with `2>&1 < /dev/null` (without it `codex exec` hangs and exits 144). Always
+pass `-c 'mcp_servers={}'` to `codex exec`: the user's `~/.codex/config.toml` registers
+remote MCP servers (Linear via `mcp-remote`, openaiDeveloperDocs) that Codex connects to
+at startup; those network/OAuth connections can hang the run (also surfacing as exit
+144). We do not need MCP for scoping/review, so disable them. (`--ignore-user-config`
+also works but drops all user config.)
 
 ---
 

@@ -129,10 +129,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mood.onMoodUpdate = { [weak controller] params in
                 controller?.applyMoodToAll(params)
             }
+            mood.onStormUpdate = { [weak controller] active in
+                controller?.applyStormToAll(active)
+            }
             // FIX 1: wire onMoodUpdate before calling start() so the first broadcast is not lost.
             moodController = mood
 
-            if env["OW_FRAMING_TEST"] == "1" {
+            if env["OW_WGT_STORM_TOGGLE_TEST"] == "1" {
+                signal(SIGUSR2, SIG_IGN)
+                let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+                usr2Src.setEventHandler { [weak controller] in
+                    controller?.forceStormOff()
+                }
+                usr2Src.resume()
+                self.sigUSR2Source = usr2Src
+            } else if env["OW_FRAMING_TEST"] == "1" {
                 signal(SIGUSR2, SIG_IGN)
                 let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
                 usr2Src.setEventHandler { [weak controller] in

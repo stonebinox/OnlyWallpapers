@@ -635,8 +635,67 @@ enum SelfTest {
         check("backingSize-clamped-w", bs5?.w == 16384)
         check("backingSize-clamped-h", bs5?.h == 16384)
 
+        // MARK: - Lightning / isThunderstorm selftests (ow-wgt, ow-maz)
+        check("isThunderstorm-95",       MoodController.isThunderstorm(95))
+        check("isThunderstorm-96",       MoodController.isThunderstorm(96))
+        check("isThunderstorm-99",       MoodController.isThunderstorm(99))
+        check("isThunderstorm-97",       MoodController.isThunderstorm(97))
+        check("isThunderstorm-98",       MoodController.isThunderstorm(98))
+        check("isThunderstorm-94-false", !MoodController.isThunderstorm(94))
+        check("isThunderstorm-100-false",!MoodController.isThunderstorm(100))
+        check("isThunderstorm-0-false",  !MoodController.isThunderstorm(0))
+        check("isThunderstorm-3-false",  !MoodController.isThunderstorm(3))
+        check("isThunderstorm-45-false", !MoodController.isThunderstorm(45))
+        check("isThunderstorm-61-false", !MoodController.isThunderstorm(61))
+        check("isThunderstorm-71-false", !MoodController.isThunderstorm(71))
+
+        // stormActive derivation from effectiveWeatherCode (calls the real extracted function)
+        check("isThunderstorm-95-true-b",  MoodController.isThunderstorm(95))
+        check("isThunderstorm-0-false-b",  !MoodController.isThunderstorm(0))
+        check("stormActive-nil-false", !MoodController.stormActive(resolvedWeather: nil, effectiveCode: nil))
+
+        // nil/stale weather => stormActive false even if effectiveCode is a thunderstorm code
+        check("stormActive-stale-nil-weather-false", !MoodController.stormActive(resolvedWeather: nil, effectiveCode: 95))
+
+        // valid storm weather (code 95-99) => stormActive true
+        let validWeatherForStorm = WeatherCacheEntry(
+            fetchedAt: Date().timeIntervalSince1970, lat: 0, lon: 0,
+            sunriseEpoch: 0, sunsetEpoch: 86400, weatherCode: 95, cloudCover: 100, precipitation: 5)
+        check("stormActive-valid-storm-true", MoodController.stormActive(resolvedWeather: validWeatherForStorm, effectiveCode: 95))
+
+        // valid clear weather => stormActive false
+        let validWeatherClear = WeatherCacheEntry(
+            fetchedAt: Date().timeIntervalSince1970, lat: 0, lon: 0,
+            sunriseEpoch: 0, sunsetEpoch: 86400, weatherCode: 0, cloudCover: 0, precipitation: 0)
+        check("stormActive-valid-clear-false", !MoodController.stormActive(resolvedWeather: validWeatherClear, effectiveCode: 0))
+
+        // flashAlpha envelope: rises to peak, decays to 0, clamped [0,peak]
+        let fa_peak = 0.7
+        let fa_eps  = 0.02
+        check("flashAlpha-t0-zero", abs(SelfTest.flashAlpha(elapsedMs: 0, peakAlpha: fa_peak)) < fa_eps)
+        check("flashAlpha-half-rise", abs(SelfTest.flashAlpha(elapsedMs: 10, peakAlpha: fa_peak) - fa_peak * 0.5) < fa_eps)
+        check("flashAlpha-at-peak", abs(SelfTest.flashAlpha(elapsedMs: 20, peakAlpha: fa_peak) - fa_peak) < fa_eps)
+        check("flashAlpha-decay-lt-peak", SelfTest.flashAlpha(elapsedMs: 21, peakAlpha: fa_peak) < fa_peak - fa_eps)
+        check("flashAlpha-burst-end-zero", SelfTest.flashAlpha(elapsedMs: 140, peakAlpha: fa_peak) == 0)
+        check("flashAlpha-past-burst-zero", SelfTest.flashAlpha(elapsedMs: 200, peakAlpha: fa_peak) == 0)
+        let fa_mid = SelfTest.flashAlpha(elapsedMs: 15, peakAlpha: fa_peak)
+        check("flashAlpha-clamped-upper", fa_mid <= fa_peak)
+        check("flashAlpha-clamped-lower", fa_mid >= 0)
+        check("flashAlpha-negative-zero", SelfTest.flashAlpha(elapsedMs: -1, peakAlpha: fa_peak) == 0)
+
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SELFTEST summary passed=\(passed) failed=\(failed)\n".utf8))
         exit(failed == 0 ? 0 : 1)
+    }
+
+    static func flashAlpha(elapsedMs: Double, peakAlpha: Double, riseMs: Double = 20, decayMs: Double = 120) -> Double {
+        guard elapsedMs >= 0 else { return 0 }
+        if elapsedMs < riseMs {
+            return peakAlpha * (elapsedMs / riseMs)
+        }
+        let decayElapsed = elapsedMs - riseMs
+        if decayElapsed >= decayMs { return 0 }
+        let k = 3.5 / decayMs
+        return peakAlpha * exp(-k * decayElapsed)
     }
 
     // Pure helper: mirrors the JS backingSize logic for selftest.

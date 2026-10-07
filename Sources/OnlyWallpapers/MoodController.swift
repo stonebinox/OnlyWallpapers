@@ -37,6 +37,7 @@ final class MoodController: NSObject {
     private var effectiveWeatherCode: Int? = nil
 
     var onMoodUpdate: ((MoodParams) -> Void)?
+    var onStormUpdate: ((Bool) -> Void)?
 
     override init() {
         let env = ProcessInfo.processInfo.environment
@@ -233,6 +234,13 @@ final class MoodController: NSObject {
             }
         )
         onMoodUpdate?(params)
+        let stormActive: Bool
+        if ProcessInfo.processInfo.environment["OW_WGT_TEST"] == "1" {
+            stormActive = true
+        } else {
+            stormActive = MoodController.stormActive(resolvedWeather: weather, effectiveCode: effectiveWeatherCode)
+        }
+        onStormUpdate?(stormActive)
     }
 
     private func resolveWeather(now: Double) -> WeatherCacheEntry? {
@@ -290,6 +298,15 @@ final class MoodController: NSObject {
             currentLatLon: (lat, lon)
         ) else { return }
         await fetchWeather(lat: lat, lon: lon)
+    }
+
+    nonisolated static func isThunderstorm(_ code: Int) -> Bool {
+        return code >= 95 && code <= 99
+    }
+
+    nonisolated static func stormActive(resolvedWeather: WeatherCacheEntry?, effectiveCode: Int?) -> Bool {
+        guard resolvedWeather != nil else { return false }
+        return effectiveCode.map { isThunderstorm($0) } ?? false
     }
 
     nonisolated static func openMeteoURL(lat: Double, lon: Double) -> String {
@@ -396,6 +413,8 @@ final class MoodController: NSObject {
 
         let params = moodParams(nowEpoch: nowEpoch, sunriseEpoch: sunrise, sunsetEpoch: sunset, weather: weather)
         onMoodUpdate?(params)
+        let hookStorm = weather.map { MoodController.isThunderstorm($0.weatherCode) } ?? false
+        onStormUpdate?(hookStorm)
     }
 
     deinit {

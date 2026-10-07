@@ -279,3 +279,229 @@ window.__setWallpaperVideo = function(src) {
   var p = v.play();
   if (p && p.catch) { p.catch(function(){}); }
 };
+
+(function () {
+  "use strict";
+
+  var FLICKER_MIN        = 2;
+  var FLICKER_MAX        = 4;
+  var FLASH_RISE_MS      = 20;
+  var FLASH_DECAY_MS     = 120;
+  var PEAK_ALPHA_MIN     = 0.25;
+  var PEAK_ALPHA_MAX     = 0.85;
+  var GLOW_RADIUS_FRAC   = 0.38;
+  var VEIL_ALPHA         = 0.12;
+  var FLASH_COLOR        = [205, 225, 255];
+  var INTER_FLICKER_MIN  = 40;
+  var INTER_FLICKER_MAX  = 110;
+  var PROD_INTERVAL_MIN  = 15000;
+  var PROD_INTERVAL_MAX  = 60000;
+  var TEST_INTERVAL_MIN  = 2000;
+  var TEST_INTERVAL_MAX  = 4000;
+
+  function rnd(lo, hi) { return lo + Math.random() * (hi - lo); }
+  function rndInt(lo, hi) { return Math.floor(rnd(lo, hi + 1)); }
+
+  var R = FLASH_COLOR[0];
+  var G = FLASH_COLOR[1];
+  var B = FLASH_COLOR[2];
+
+  var _wgtStats = null;
+
+  var _phase        = 'idle';
+  var _nextBurstAt  = 0;
+  var _nextFlickerAt = 0;
+  var _decayStart   = 0;
+  var _decayEnd     = 0;
+  var _flickersLeft = 0;
+  var _ox           = 0;
+  var _oy           = 0;
+  var _peakAlpha    = 0;
+  var _riseEnd      = 0;
+  var _k            = 3.5 / FLASH_DECAY_MS;
+
+  function scheduleBurst(ts) {
+    _phase = 'idle';
+    var iMin = (window.__wgtTest === true) ? TEST_INTERVAL_MIN : PROD_INTERVAL_MIN;
+    var iMax = (window.__wgtTest === true) ? TEST_INTERVAL_MAX : PROD_INTERVAL_MAX;
+    _nextBurstAt = ts + rnd(iMin, iMax);
+  }
+
+  function startBurst(w, h, ts) {
+    _ox           = rnd(0, w);
+    _oy           = rnd(0, h * 0.4);
+    _peakAlpha    = rnd(PEAK_ALPHA_MIN, PEAK_ALPHA_MAX);
+    _flickersLeft = rndInt(FLICKER_MIN, FLICKER_MAX);
+    startFlicker(ts);
+  }
+
+  function startFlicker(ts) {
+    _phase    = 'rise';
+    _riseEnd  = ts + FLASH_RISE_MS;
+    _decayStart = _riseEnd;
+    _decayEnd   = _decayStart + FLASH_DECAY_MS;
+  }
+
+  function drawFlash(ctx, w, h, a) {
+    ctx.clearRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'lighter';
+
+    var primaryRadius = GLOW_RADIUS_FRAC * w;
+    var grad = ctx.createRadialGradient(_ox, _oy, 0, _ox, _oy, primaryRadius);
+    grad.addColorStop(0, 'rgba(' + R + ',' + G + ',' + B + ',' + a + ')');
+    grad.addColorStop(1, 'rgba(' + R + ',' + G + ',' + B + ',0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(_ox, _oy, primaryRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    var ox2 = _ox - 0.07 * w;
+    var oy2 = _oy + 0.04 * h;
+    var r2  = 0.55 * primaryRadius;
+    var a2  = a * 0.6;
+    var grad2 = ctx.createRadialGradient(ox2, oy2, 0, ox2, oy2, r2);
+    grad2.addColorStop(0, 'rgba(' + R + ',' + G + ',' + B + ',' + a2 + ')');
+    grad2.addColorStop(1, 'rgba(' + R + ',' + G + ',' + B + ',0)');
+    ctx.fillStyle = grad2;
+    ctx.beginPath();
+    ctx.arc(ox2, oy2, r2, 0, Math.PI * 2);
+    ctx.fill();
+
+    var veilA = VEIL_ALPHA * a / PEAK_ALPHA_MAX;
+    ctx.fillStyle = 'rgba(' + R + ',' + G + ',' + B + ',' + veilA + ')';
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.globalCompositeOperation = 'source-over';
+    if (!window.__wgtStats) window.__wgtStats = { maxRenderedAlpha: 0, maxAlpha: 0, idleAlpha: 0, postFlashIdleAlpha: -1 };
+    _wgtStats = window.__wgtStats;
+    var drawnA = Math.round(a * 255);
+    if (drawnA > (_wgtStats.maxAlpha || 0)) { _wgtStats.maxAlpha = drawnA; }
+    if (window.__wgtTest === true) {
+      try {
+        var midX = Math.floor(w / 2);
+        var midY = Math.floor(h / 4);
+        var px = ctx.getImageData(midX, midY, 1, 1).data[3];
+        if (px > (_wgtStats.maxRenderedAlpha || 0)) { _wgtStats.maxRenderedAlpha = px; }
+      } catch (e) {}
+    }
+  }
+
+  function frame(ctx, w, h, ts) {
+    if (_phase === 'idle') {
+      if (!window.__wgtStats) window.__wgtStats = { maxRenderedAlpha: 0, maxAlpha: 0, idleAlpha: 0, postFlashIdleAlpha: -1 };
+      _wgtStats = window.__wgtStats;
+      if (!_wgtStats._idleSampled) {
+        try {
+          _wgtStats.idleAlpha = ctx.getImageData(0, 0, 1, 1).data[3];
+          _wgtStats._idleSampled = true;
+        } catch (e) {}
+      }
+      if ((_wgtStats.maxRenderedAlpha || 0) > 0 && !_wgtStats._postFlashIdleSampled) {
+        try {
+          _wgtStats.postFlashIdleAlpha = ctx.getImageData(0, 0, 1, 1).data[3];
+          _wgtStats._postFlashIdleSampled = true;
+        } catch (e) {}
+      }
+      if (ts >= _nextBurstAt) { startBurst(w, h, ts); }
+      return;
+    }
+
+    if (_phase === 'gap') {
+      if (ts >= _nextFlickerAt) {
+        startFlicker(ts);
+      }
+      return;
+    }
+
+    if (_phase === 'rise') {
+      var risePhase = Math.min((ts - (_riseEnd - FLASH_RISE_MS)) / FLASH_RISE_MS, 1);
+      var a = _peakAlpha * risePhase;
+      drawFlash(ctx, w, h, a);
+      if (ts >= _riseEnd) {
+        _phase = 'decay';
+      }
+      return;
+    }
+
+    if (_phase === 'decay') {
+      if (ts >= _decayEnd) {
+        ctx.clearRect(0, 0, w, h);
+        _flickersLeft -= 1;
+        if (!window.__wgtStats) window.__wgtStats = { maxRenderedAlpha: 0, maxAlpha: 0, idleAlpha: 0, postFlashIdleAlpha: -1 };
+        _wgtStats = window.__wgtStats;
+        if ((_wgtStats.maxRenderedAlpha || 0) > 0 && !_wgtStats._postFlashIdleSampled) {
+          _wgtStats.postFlashIdleAlpha = 0;
+          _wgtStats._postFlashIdleSampled = true;
+        }
+        if (_flickersLeft <= 0) {
+          scheduleBurst(ts);
+        } else {
+          _phase         = 'gap';
+          _nextFlickerAt = ts + rnd(INTER_FLICKER_MIN, INTER_FLICKER_MAX);
+        }
+        return;
+      }
+      var decayPhase = ts - _decayStart;
+      var ad = _peakAlpha * Math.exp(-_k * decayPhase);
+      drawFlash(ctx, w, h, ad);
+      return;
+    }
+  }
+
+  function init(ctx, w, h, dpr) {
+    scheduleBurst(performance.now());
+    if (window.__wgtTest === true) {
+      _nextBurstAt = performance.now() + 200;
+    }
+  }
+
+  function resize(w, h, dpr) {}
+
+  var lightningEffect = {
+    manualClear: true,
+    frame: frame,
+    init: init,
+    resize: resize
+  };
+
+  window.__wgtFlashAlpha = function(elapsedMs, peak) {
+    if (elapsedMs < 0) return 0;
+    if (elapsedMs < FLASH_RISE_MS) return peak * (elapsedMs / FLASH_RISE_MS);
+    var decayElapsed = elapsedMs - FLASH_RISE_MS;
+    if (decayElapsed >= FLASH_DECAY_MS) return 0;
+    return peak * Math.exp(-_k * decayElapsed);
+  };
+
+  var _stormRegistered = false;
+  var _reducedMotion = false;
+  if (typeof window.matchMedia === 'function') {
+    var _rmMq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    _reducedMotion = _rmMq.matches;
+    if (typeof _rmMq.addEventListener === 'function') {
+      _rmMq.addEventListener('change', function(e) {
+        _reducedMotion = e.matches;
+        applyStorm(window.__wallpaperStorm === true);
+      });
+    }
+  }
+
+  function applyStorm(active) {
+    var rm = _reducedMotion || (window.__wgtReducedMotion === true);
+    if (rm) {
+      if (_stormRegistered) { window.__overlay.unregister(); _stormRegistered = false; }
+      return;
+    }
+    var effectiveActive = active || (window.__wgtTest === true);
+    if (effectiveActive && !_stormRegistered) {
+      window.__overlay.register(lightningEffect);
+      window.__overlay.start();
+      _stormRegistered = true;
+    } else if (!effectiveActive && _stormRegistered) {
+      window.__overlay.unregister();
+      _stormRegistered = false;
+    }
+  }
+
+  window.__setWallpaperStorm = applyStorm;
+  applyStorm(window.__wallpaperStorm === true);
+})();

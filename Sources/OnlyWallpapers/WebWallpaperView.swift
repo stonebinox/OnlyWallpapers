@@ -20,8 +20,9 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
     private var isLoaded: Bool = false
     private var latestFraming: AppStorageManager.FramingConfig?
     private var latestMood: MoodParams?
+    private var latestStorm: Bool = false
 
-    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig, initialMood: MoodParams) {
+    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig, initialMood: MoodParams, initialStorm: Bool) {
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
         self.screenName = screenName
@@ -101,7 +102,30 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             config.userContentController.addUserScript(overlayScript)
         }
 
+        // Storm initial state injection.
+        let wgtTest = ProcessInfo.processInfo.environment["OW_WGT_TEST"] == "1"
+        let effectiveInitialStorm = initialStorm || wgtTest
+        var stormJS = "window.__wallpaperStorm=\(effectiveInitialStorm ? "true" : "false");"
+        if wgtTest { stormJS += "window.__wgtTest=true;" }
+        let stormScript = WKUserScript(
+            source: stormJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(stormScript)
+
+        // Reduced-motion test override: inject before IIFE so applyStorm checks it at call time.
+        if ProcessInfo.processInfo.environment["OW_WGT_REDUCED_MOTION"] == "1" {
+            let rmScript = WKUserScript(
+                source: "window.__wgtReducedMotion=true;",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(rmScript)
+        }
+
         super.init(frame: frame, configuration: config)
+        self.latestStorm = initialStorm
         // On macOS 26, the public transparency path (underPageBackgroundColor + transparent CSS)
         // leaves the WKWebView base opaque. The page supplies the backdrop (black fallback here;
         // full-bleed video in ow-94b.2). True desktop-through transparency would require the
@@ -266,6 +290,88 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         applyMoodNow(params)
     }
 
+    func applyStorm(_ active: Bool) {
+        latestStorm = active
+        guard isLoaded else { return }
+        applyStormNow(active)
+    }
+
+    private func applyStormNow(_ active: Bool) {
+        let wgtTest = ProcessInfo.processInfo.environment["OW_WGT_TEST"] == "1"
+        let effective = active || wgtTest
+        let win = self.window?.windowNumber ?? 0
+        let js = "window.__setWallpaperStorm(\(effective ? "true" : "false"))"
+        self.evaluateJavaScript(js) { [weak self] _, _ in
+            guard let self else { return }
+            let wn = self.window?.windowNumber ?? win
+            let rbJS = "(function(){ var s=window.__overlayStats; return s ? (s.hasEffect ? 'registered' : 'none') : 'none'; })()"
+            self.evaluateJavaScript(rbJS) { [weak self] result, _ in
+                guard let self else { return }
+                let wn2 = self.window?.windowNumber ?? wn
+                let effect = (result as? String) ?? "none"
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STORM win=\(wn2) active=\(effective) effect=\(effect)\n".utf8))
+            }
+        }
+    }
+
+    func applyStormForceOff() {
+        let win = self.window?.windowNumber ?? 0
+        let js = "window.__wgtTest=false; window.__setWallpaperStorm(false);"
+        self.evaluateJavaScript(js) { [weak self] _, _ in
+            guard let self else { return }
+            let wn = self.window?.windowNumber ?? win
+            let rbJS = "(function(){ var s=window.__overlayStats; return s ? (s.hasEffect ? 'registered' : 'none') : 'none'; })()"
+            self.evaluateJavaScript(rbJS) { [weak self] result, _ in
+                guard let self else { return }
+                let wn2 = self.window?.windowNumber ?? wn
+                let effect = (result as? String) ?? "none"
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STORM_TOGGLE win=\(wn2) active=false effect=\(effect)\n".utf8))
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                let wn3 = self.window?.windowNumber ?? win
+                let pixJS = "(function(){ var cv=document.getElementById('overlay'); if(!cv) return -1; var ctx2=cv.getContext('2d'); if(!ctx2) return -1; try { return ctx2.getImageData(Math.floor(cv.width/2),Math.floor(cv.height/4),1,1).data[3]; } catch(e) { return -1; } })()"
+                self.evaluateJavaScript(pixJS) { [weak self] result, _ in
+                    let wn4 = self?.window?.windowNumber ?? wn3
+                    let px = (result as? NSNumber)?.intValue ?? -1
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STORM_CANVAS_IDLE win=\(wn4) idleAlpha=\(px)\n".utf8))
+                }
+            }
+        }
+    }
+
+    private func pollStormMaxAlpha(attempt: Int, maxAttempts: Int) {
+        let js = "(function(){ var s=window.__wgtStats; if(!s) return JSON.stringify({maxRenderedAlpha:0,postFlashIdleAlpha:-1}); return JSON.stringify({maxRenderedAlpha:s.maxRenderedAlpha||0,postFlashIdleAlpha:typeof s.postFlashIdleAlpha==='number'?s.postFlashIdleAlpha:-1}); })()"
+        let win = self.window?.windowNumber ?? 0
+        self.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else { return }
+            let wn = self.window?.windowNumber ?? win
+            guard let str = result as? String,
+                  let data = str.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let maxRenderedAlpha = (obj["maxRenderedAlpha"] as? NSNumber)?.intValue else {
+                if attempt < maxAttempts {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        self?.pollStormMaxAlpha(attempt: attempt + 1, maxAttempts: maxAttempts)
+                    }
+                } else {
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STORM_PIXEL win=\(wn) unavailable\n".utf8))
+                }
+                return
+            }
+            let postFlashIdleAlpha = (obj["postFlashIdleAlpha"] as? NSNumber)?.intValue ?? -1
+            let flashObserved = maxRenderedAlpha > 0
+            let idleSampled = postFlashIdleAlpha >= 0
+            if (!flashObserved || !idleSampled) && attempt < maxAttempts {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.pollStormMaxAlpha(attempt: attempt + 1, maxAttempts: maxAttempts)
+                }
+                return
+            }
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STORM_PIXEL win=\(wn) maxRenderedAlpha=\(maxRenderedAlpha) postFlashIdleAlpha=\(postFlashIdleAlpha)\n".utf8))
+        }
+    }
+
     private func applyMoodNow(_ params: MoodParams) {
         let filter = cssFilter(params)
         let win = self.window?.windowNumber ?? 0
@@ -383,6 +489,17 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             }
         }
 
+        // Re-apply pending storm state (mirrors mood FIX-2 pattern).
+        applyStormNow(latestStorm)
+        if ProcessInfo.processInfo.environment["OW_WGT_TEST"] == "1" {
+            pollStormMaxAlpha(attempt: 0, maxAttempts: 40)
+        }
+        if ProcessInfo.processInfo.environment["OW_WGT_ENVELOPE_TEST"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.readFlashEnvelope()
+            }
+        }
+
         for delay in [1.0, 2.5, 7.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
@@ -413,6 +530,30 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WEB screen=\(screenName) terminated\n".utf8))
+    }
+
+    private func readFlashEnvelope() {
+        let peak = 0.7
+        let points = [0.0, 10.0, 20.0, 21.0, 140.0, 200.0]
+        let ptsJSON = points.map { String($0) }.joined(separator: ",")
+        let js = "(function(){ if(typeof window.__wgtFlashAlpha!=='function') return JSON.stringify(null); var p=\(peak),pts=[\(ptsJSON)]; return JSON.stringify(pts.map(function(ms){return {ms:ms,r:window.__wgtFlashAlpha(ms,p)};})); })()"
+        let win = self.window?.windowNumber ?? 0
+        self.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let _ = self else { return }
+            guard let str = result as? String, str != "null",
+                  let data = str.data(using: .utf8),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WGT_ENVELOPE win=\(win) unavailable\n".utf8))
+                return
+            }
+            for item in arr {
+                guard let ms = (item["ms"] as? NSNumber)?.doubleValue,
+                      let r  = (item["r"]  as? NSNumber)?.doubleValue else { continue }
+                let line = String(format: "ONLYWALLPAPERS_WGT_ENVELOPE win=%ld elapsedMs=%d result=%.6f\n",
+                                  win, Int(ms), r)
+                FileHandle.standardOutput.write(Data(line.utf8))
+            }
+        }
     }
 
     private func readOverlayStats(label: String) {

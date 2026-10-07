@@ -39,6 +39,7 @@ nonisolated func computeLayout(_ frames: [CGRect]) -> (union: CGRect, slices: [W
 final class WallpaperController {
 
     private(set) var currentMood: MoodParams = .neutral
+    private(set) var currentStorm: Bool = false
     private var records: [WallpaperScreenRecord] = []
     private var committedDescriptors: [ScreenDescriptor] = []
     private var reducer = WallpaperRefreshReducer()
@@ -269,7 +270,8 @@ final class WallpaperController {
                         geometry: geo,
                         commitGen: gen,
                         initialFraming: AppStorageManager.currentFraming,
-                        initialMood: currentMood)
+                        initialMood: currentMood,
+                        initialStorm: currentStorm)
                     let win = WallpaperWindow(frame: desc.frame, contentView: webView)
                     win.orderFrontRegardless()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
@@ -376,6 +378,19 @@ final class WallpaperController {
         for rec in records {
             rec.webView?.applyMood(params)
         }
+    }
+
+    func applyStormToAll(_ active: Bool) {
+        currentStorm = active
+        for rec in records {
+            rec.webView?.applyStorm(active)
+        }
+    }
+
+    func forceStormOff() {
+        let webViews = records.compactMap { $0.webView }
+        for wv in webViews { wv.applyStormForceOff() }
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STORM_TOGGLE_SENT count=\(webViews.count)\n".utf8))
     }
 
     private func updateFraming(_ cfg: AppStorageManager.FramingConfig) {

@@ -130,17 +130,33 @@ Last updated: 2026-10-06
   does an IN-PLACE `<video>` source swap across all screens (preserving ow-blz.3
   geometry). Gates prove it: default resolves source=appstore (code byte-identical to
   bundle), a media-switch gate proves the NEW clip loaded BY DURATION (6s -> 3s), plus
-  self-heal, no-reseed-on-rebuild, picker-enabled-per-source, and bundle-fallback. The
-  NSOpenPanel focus on an accessory app and the on-screen swap are a manual Phase 5
-  check. Was blocked on diagnosing a Codex hang (its MCP servers + long prompts; fixed
-  in CLAUDE.md with `-c mcp_servers={}` + lean prompts).
+  self-heal, no-reseed-on-rebuild, picker-enabled-per-source, and bundle-fallback. Phase
+  5 CONFIRMED by the user (the picker opens and focuses on the accessory app, the
+  wallpaper swaps live across screens, and survives relaunch). Was blocked on diagnosing
+  a Codex hang (its MCP servers + long prompts; fixed in CLAUDE.md with
+  `-c mcp_servers={}` + lean prompts).
+- ow-aqx.6 (framing controls, code-complete; Phase 5 pending): a menu-bar "Framing"
+  submenu (Move Up/Down/Left/Right, Zoom In/Out, Reset) repositions and zooms the video,
+  persisted in `config.json` (sibling of web/ in app storage) and applied live across all
+  screens. No CSS transform (ow-blz.2): REPOSITION via `object-position` AND a left/top
+  zoom-slack offset, both from one pan pair so Move Left/Right works when zoomed on a wide
+  union (Grok caught that object-position alone cannot steer the zoom slack); ZOOM by
+  sizing `#bg` (width/height = zoom * stage, percent so it tracks hot-plug), object-fit
+  cover, z in [1,2]. WebWallpaperView injects `window.__wallpaperFraming` at document-start
+  (clamped + finite-guarded) and re-applies on didFinish (last-write-wins), logging the
+  ACTUAL applied values per view. `scripts/framing-check.sh` (6 subtests) proves per-view
+  used-px == zoom*stageW + left/top + identity, live nudge + all-three-field persistence
+  through writeFraming, config.json created when app storage is absent, per-window clamp,
+  a RUNTIME resize to z=2 keeping media=playing (the hardware-layer risk cleared), and a
+  hot-plug newcomer carrying the current framing. The on-screen look (Move Left/Right when
+  zoomed, bezel continuity) is a manual Phase 5 check.
 
 ### Next Step
-Phase 5 for ow-aqx.2: click "Choose video..." on the running app (panel focus + live
-swap). ow-aad.3 (launch at login) makes the packaged `.app` auto-start (reboot test
-deferred by the user). ow-blz.4 (geometry unit tests, now partly covered by the
-ow-blz.3 OW_SELFTEST cases); ow-94b.4 (a real sample video); ow-aqx.6/aqx.7 (framing +
-the fuller menu-bar controls); ow-aqx.5 (bounce); ow-aqx.1 (moods). ow-mbw.4 adds the
+Phase 5 for ow-aqx.6: try the Framing submenu on the running app (Move Up/Down, Zoom In,
+and Move Left/Right while zoomed). ow-aad.3 (launch at login) makes the packaged `.app`
+auto-start (reboot test deferred by the user). ow-blz.4 (geometry unit tests, now partly
+covered by the ow-blz.3 OW_SELFTEST cases); ow-94b.4 (a real sample video); ow-aqx.7 (the
+fuller menu-bar controls surface); ow-aqx.5 (bounce); ow-aqx.1 (moods). ow-mbw.4 adds the
 fuller window-config run check; ow-blz.5 handles slice sync. Retiring the env-gated
 webspike A/B is a deferred cleanup.
 

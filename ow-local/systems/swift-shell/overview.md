@@ -44,11 +44,18 @@ slice geometry. The per-screen slice geometry is now injected into the web layer
   (`window.__wallpaper`) via a document-start `WKUserScript` (ow-blz.2) and logs a
   `getBoundingClientRect`-based applied read-back. Loads the real looping-video page
   (ow-94b.2).
-- **StatusItemController** (ow-aad.5, done): a minimal menu-bar `NSStatusItem`
-  (template SF Symbol) with a disabled title and a "Quit OnlyWallpapers" item that
-  calls `NSApp.terminate`. Created only in the default production path and retained by
-  `AppDelegate`. Logs `ONLYWALLPAPERS_STATUSITEM created=<bool>`. It is the only way
-  to quit the installed accessory app without Activity Monitor.
+- **StatusItemController** (ow-aad.5 + ow-aqx.2 + ow-aqx.6, done): the menu-bar
+  `NSStatusItem` (template SF Symbol). Menu: a "Choose video..." item (ow-aqx.2, enabled
+  only when the resolved source is `appstore` and the assets dir is writable), a
+  "Framing" submenu (ow-aqx.6: Move Up/Down/Left/Right, Zoom In/Out, Reset, wired to the
+  controller framing nudges), and "Quit OnlyWallpapers" (`NSApp.terminate`). Created only
+  in the default production path, retained by `AppDelegate` (which passes the controller
+  coordinator). Logs `ONLYWALLPAPERS_STATUSITEM created=<bool>`. It is the only way to
+  quit the installed accessory app without Activity Monitor.
+- **AppStorageManager** (ow-aqx.2 + ow-aqx.6, done): owns app-storage. Seeds the writable
+  web dir (see Web Asset Resolution) and owns the framing `config.json` (sibling of
+  `web/`): per-field clamped read, atomic rounded write, creates `appSupportRoot` if
+  absent. `currentFraming` is the in-memory source of truth injected into each view.
 
 ## The Desktop-Layer Trick
 A normal window becomes a wallpaper with these settings:

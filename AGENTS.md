@@ -27,6 +27,9 @@ Never use em dashes or en dashes anywhere in your output. Use a period, comma,
 colon, or parentheses instead.
 
 ## When Called for Co-Scope (Phase 1)
+0. Stay BOUNDED: read only the files named in the prompt, do not grep the whole repo,
+   and be concise. Open-ended whole-repo exploration makes the run so long it can be
+   killed (exit 144). Focused analysis is both faster and more useful.
 1. Read the task for full details.
 2. Read the relevant code yourself. Do not rely on Claude's summary.
 3. Identify the affected module.

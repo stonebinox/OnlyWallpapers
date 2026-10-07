@@ -46,6 +46,24 @@ stage to the viewport. Verification: the native `ONLYWALLPAPERS_WEB applied` log
 (read from `getBoundingClientRect` on `#stage`) asserts `left == -offX` per screen.
 Temporal frame sync across displays is a separate concern (ow-blz.5).
 
+## Framing: reposition + zoom (ow-aqx.6, done)
+The user repositions and zooms the video from the menu bar. NO CSS transform (see the
+Slice Transform note: a transform blanks the hardware video layer). REPOSITION uses
+`#bg { object-position: X% Y% }` AND a left/top zoom-slack offset, both driven by ONE
+pan pair (panX/panY in -1..1): at zoom 1 it is pure object-position (the chopped-crop
+fix); when zoomed, the offset `left/top = 50*(1-z)*(1+pan)%` adds, so a full stage-sized
+window slides over the cover-scaled source (so Move Left/Right works on a wide union
+once zoomed, which object-position alone cannot do). ZOOM sizes `#bg`:
+`width = height = 100*z %` (percent of `#stage`, so it auto-tracks hot-plug resizes),
+object-fit cover, `#stage` clips the enlarged video; z in [1,2] (below 1 would expose
+black). `#bg` is pulled off the `inset:0` rule with explicit `right/bottom:auto` so the
+box math is not overconstrained. `wallpaper.js` exposes `window.__setWallpaperFraming(cfg)`
+(a pure setter, clamped) and applies the injected `window.__wallpaperFraming` at
+document-start; it is NOT called from the geometry IIFE (percent sizing reflows on stage
+resize, and touching `#bg` on the hot-plug survivor path risks a blank). Settings persist
+in `config.json` and inject identically on every screen, so framing stays continuous
+across the bezel. See swift-shell/overview.md for persistence + injection.
+
 ## Autoplay
 The `<video>` needs `muted` + `playsinline` and an explicit `.play()` call (retried
 on the `canplay` event) or macoS will not start it unprompted.

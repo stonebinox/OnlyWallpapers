@@ -28,7 +28,14 @@ else
     fail "binary missing or not executable: $APP/Contents/MacOS/OnlyWallpapers"
 fi
 
-APP_BUNDLE_WEB="$APP/OnlyWallpapers_OnlyWallpapers.bundle/web"
+LIPO_ARCHS="$(lipo -archs "$APP/Contents/MacOS/OnlyWallpapers" 2>/dev/null || true)"
+if echo "$LIPO_ARCHS" | grep -qw "x86_64" && echo "$LIPO_ARCHS" | grep -qw "arm64"; then
+    pass "binary is universal (lipo -archs: $LIPO_ARCHS)"
+else
+    fail "binary is NOT universal (lipo -archs: $LIPO_ARCHS); expected both x86_64 and arm64"
+fi
+
+APP_BUNDLE_WEB="$APP/OnlyWallpapers_OnlyWallpapers.bundle/Contents/Resources/web"
 for _asset in index.html style.css wallpaper.js; do
     if [ -f "$APP_BUNDLE_WEB/$_asset" ]; then
         pass "app bundle web/$_asset exists"
@@ -170,7 +177,7 @@ else
 fi
 
 # --- Assert byte equality of seeded code files vs app bundle originals (FIX 9) ---
-APP_BUNDLE_WEB="$TMP_APP/OnlyWallpapers_OnlyWallpapers.bundle/web"
+APP_BUNDLE_WEB="$TMP_APP/OnlyWallpapers_OnlyWallpapers.bundle/Contents/Resources/web"
 echo "[byte-eq] Checking seeded code files are byte-identical to app bundle originals..."
 PKG_BYTE_EQ_FAIL=0
 for _name in index.html style.css wallpaper.js; do
@@ -255,8 +262,14 @@ else
     exit 1
 fi
 
-# --- Assert STATUSITEM created=true ---
-STATUSITEM_LINE="$(grep "ONLYWALLPAPERS_STATUSITEM" "$TMPOUT" | head -1 || true)"
+# --- Poll for STATUSITEM created=true (up to 3s) ---
+STATUSITEM_LINE=""
+for i in $(seq 1 30); do
+    if ! kill -0 "$APP_PID" 2>/dev/null; then break; fi
+    STATUSITEM_LINE="$(grep "ONLYWALLPAPERS_STATUSITEM" "$TMPOUT" | head -1 || true)"
+    if [ -n "$STATUSITEM_LINE" ]; then break; fi
+    sleep 0.1
+done
 if echo "$STATUSITEM_LINE" | grep -Eq 'created=true( |$)'; then
     pass "STATUSITEM created=true"
 else

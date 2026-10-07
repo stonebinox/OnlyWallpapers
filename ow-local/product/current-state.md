@@ -101,8 +101,8 @@ Last updated: 2026-10-06
   `.build`) and resolves `source=appstore` from a temp app-storage (it asserted
   `source=bundle` before ow-aqx.2), with `policy=accessory`, the status item, and
   per-screen `loaded=ok`, then a clean SIGINT and no orphan process. Unsigned/local,
-  arm64 only. To set a video in the installed app: use the menu-bar "Choose video..."
-  item (ow-aqx.2). Launch at login is ow-aad.3.
+  universal (arm64 + x86_64, ow-aad.5.1; needs macOS 14+). To set a video in the installed
+  app: use the menu-bar "Choose video..." item (ow-aqx.2). Launch at login is ow-aad.3.
 - ow-blz.3 (done): the wallpaper rebuilds IN PLACE when displays are attached,
   detached, or rearranged (no relaunch; the in-place video keeps playing, so it is
   designed for no black flash, to be confirmed visually in Phase 5 on real hardware).

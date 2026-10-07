@@ -127,8 +127,10 @@ and resolves `source=appstore` from the temp app-storage, plus `policy=accessory
 status item, and per-screen `loaded=ok`. Unsigned
 local builds have no quarantine so they run without a Gatekeeper prompt (an
 `xattr -dr com.apple.quarantine` escape hatch is documented for transferred copies).
-arm64 only; the binary links only the OS Swift runtime (`/usr/lib/swift`), so no dylib
-bundling. Launch at login is separate (ow-aad.3).
+universal (arm64 + x86_64, ow-aad.5.1; built via `swift build --arch arm64 --arch
+x86_64`, verified with `lipo -archs`); the binary links only the OS Swift runtime
+(`/usr/lib/swift`), so no dylib bundling. Needs macOS 14 (Sonoma) or newer. Launch at
+login is separate (ow-aad.3).
 
 ## Lifecycle (verified, ow-aad.1)
 Lock/unlock, sleep/wake, and screensaver all behave correctly on real hardware: the

@@ -6,11 +6,11 @@ cd "$REPO_ROOT"
 
 echo "=== package-app: building OnlyWallpapers.app ==="
 
-echo "[build] swift build -c release --product OnlyWallpapers -Xswiftc -warnings-as-errors"
-swift build -c release --product OnlyWallpapers -Xswiftc -warnings-as-errors
+echo "[build] swift build -c release --arch arm64 --arch x86_64 --product OnlyWallpapers -Xswiftc -warnings-as-errors"
+swift build -c release --arch arm64 --arch x86_64 --product OnlyWallpapers -Xswiftc -warnings-as-errors
 echo "[build] PASS"
 
-BIN_PATH="$(swift build -c release --product OnlyWallpapers --show-bin-path)"
+BIN_PATH="$(swift build -c release --arch arm64 --arch x86_64 --product OnlyWallpapers --show-bin-path)"
 echo "[bin] BIN_PATH=$BIN_PATH"
 
 APP="$REPO_ROOT/dist/OnlyWallpapers.app"
@@ -58,6 +58,16 @@ echo "[plist] Written $APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
 echo "[plist] PASS: plutil lint ok"
 
+echo "[universal] Verifying binary is universal (arm64 + x86_64)..."
+LIPO_ARCHS="$(lipo -archs "$APP/Contents/MacOS/OnlyWallpapers")"
+echo "[universal] lipo -archs: $LIPO_ARCHS"
+if echo "$LIPO_ARCHS" | grep -qw "x86_64" && echo "$LIPO_ARCHS" | grep -qw "arm64"; then
+    echo "[universal] PASS: binary contains both x86_64 and arm64"
+else
+    echo "[universal] FAIL: expected both x86_64 and arm64, got: $LIPO_ARCHS"
+    exit 1
+fi
+
 echo ""
 echo "Built: $APP"
-echo "=== PASS: OnlyWallpapers.app assembled ==="
+echo "=== PASS: OnlyWallpapers.app assembled (universal binary: arm64 + x86_64) ==="

@@ -49,7 +49,7 @@ then pick an `.mp4` file (MPEG-4/H.264). The app copies it into its own storage
 is overwritten on each new pick) and plays it immediately. The choice persists across
 launches and reboots, and you can delete the original file afterward.
 
-Note: arm64 (Apple Silicon) only; unsigned, for local personal use.
+Note: universal binary (Apple Silicon arm64 + Intel x86_64); requires macOS 14 (Sonoma) or newer; unsigned, for local personal use. On Intel Macs, video decode runs hotter, especially at 4K across multiple displays.
 
 ## For AI Agents
 Read, in order:

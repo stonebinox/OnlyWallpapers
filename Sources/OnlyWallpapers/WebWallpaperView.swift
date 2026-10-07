@@ -91,6 +91,16 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         )
         config.userContentController.addUserScript(moodScript)
 
+        // Overlay test injection: document-start flag so __overlayTest is available when the IIFE runs.
+        if ProcessInfo.processInfo.environment["OW_OVERLAY_TEST"] == "1" {
+            let overlayScript = WKUserScript(
+                source: "window.__overlayTest=true;",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(overlayScript)
+        }
+
         super.init(frame: frame, configuration: config)
         // On macOS 26, the public transparency path (underPageBackgroundColor + transparent CSS)
         // leaves the WKWebView base opaque. The page supplies the backdrop (black fallback here;
@@ -118,6 +128,14 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         latestGen = gen
         guard isLoaded else { return }
         applyAndLog(rW: rW, rH: rH, rX: rX, rY: rY, gen: gen)
+        // In test mode, emit overlay stats after the backing resize so the surviving-view path is verifiable.
+        if ProcessInfo.processInfo.environment["OW_OVERLAY_TEST"] == "1" {
+            let capturedGen = gen
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, self.latestGen == capturedGen else { return }
+                self.readOverlayStats(label: "geo-resize")
+            }
+        }
     }
 
     // FIX 2 + FIX 5: gen-guarded apply. Stale completions are dropped (last-write-wins).
@@ -357,6 +375,14 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             applyMoodNow(m)
         }
 
+        // Always emit one overlay readback (for inert-mode positive assertion); test mode adds a delayed one for frame-advance verification.
+        readOverlayStats(label: "didFinish")
+        if ProcessInfo.processInfo.environment["OW_OVERLAY_TEST"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.readOverlayStats(label: "delayed")
+            }
+        }
+
         for delay in [1.0, 2.5, 7.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
@@ -387,5 +413,34 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WEB screen=\(screenName) terminated\n".utf8))
+    }
+
+    private func readOverlayStats(label: String) {
+        let js = "(function(){ var s=window.__overlayStats; if(!s) return JSON.stringify(null); return JSON.stringify({w:s.sized&&s.sized.w,h:s.sized&&s.sized.h,dpr:s.sized&&s.sized.dpr,running:s.running,frames:s.frames,hasEffect:s.hasEffect,emptyAlpha:typeof s.emptyAlpha==='number'?s.emptyAlpha:null,markerAlpha:typeof s.markerAlpha==='number'?s.markerAlpha:null}); })()"
+        let win = self.window?.windowNumber ?? 0
+        self.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else { return }
+            let wn = self.window?.windowNumber ?? win
+            guard let str = result as? String, str != "null",
+                  let data = str.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let sw = (obj["w"] as? NSNumber)?.intValue,
+                  let sh = (obj["h"] as? NSNumber)?.intValue,
+                  let dpr = (obj["dpr"] as? NSNumber)?.doubleValue,
+                  let running = obj["running"] as? Bool,
+                  let hasEffect = obj["hasEffect"] as? Bool,
+                  let frames = (obj["frames"] as? NSNumber)?.intValue else {
+                return
+            }
+            let emptyAlpha = (obj["emptyAlpha"] as? NSNumber)?.intValue
+            let markerAlpha = (obj["markerAlpha"] as? NSNumber)?.intValue
+            var line = String(format: "ONLYWALLPAPERS_OVERLAY win=%ld label=%@ sizedW=%d sizedH=%d dpr=%.2f running=%@ frames=%d hasEffect=%@",
+                              wn, label, sw, sh, dpr, running ? "true" : "false", frames, hasEffect ? "true" : "false")
+            if let ea = emptyAlpha, let ma = markerAlpha {
+                line += " emptyAlpha=\(ea) markerAlpha=\(ma)"
+            }
+            line += "\n"
+            FileHandle.standardOutput.write(Data(line.utf8))
+        }
     }
 }

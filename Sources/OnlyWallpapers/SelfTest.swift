@@ -620,7 +620,31 @@ enum SelfTest {
 
         AppStorageManager.testingRootOverride = nil
         try? FileManager.default.removeItem(at: cmTmpDir)
+
+        // MARK: - backingSize selftest (ow-aqx.3)
+        let bs1 = backingSize(stageW: 1920, stageH: 1080, dpr: 2.0)
+        check("backingSize-normal-w", bs1?.w == 3840)
+        check("backingSize-normal-h", bs1?.h == 2160)
+        let bs2 = backingSize(stageW: 0, stageH: 1080, dpr: 2.0)
+        check("backingSize-zero-w-nil", bs2 == nil)
+        let bs3 = backingSize(stageW: 1920, stageH: Double.nan, dpr: 2.0)
+        check("backingSize-nan-h-nil", bs3 == nil)
+        let bs4 = backingSize(stageW: Double.infinity, stageH: 1080, dpr: 2.0)
+        check("backingSize-inf-w-nil", bs4 == nil)
+        let bs5 = backingSize(stageW: 10000, stageH: 10000, dpr: 4.0)
+        check("backingSize-clamped-w", bs5?.w == 16384)
+        check("backingSize-clamped-h", bs5?.h == 16384)
+
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SELFTEST summary passed=\(passed) failed=\(failed)\n".utf8))
         exit(failed == 0 ? 0 : 1)
+    }
+
+    // Pure helper: mirrors the JS backingSize logic for selftest.
+    private static func backingSize(stageW: Double, stageH: Double, dpr: Double) -> (w: Int, h: Int)? {
+        guard stageW.isFinite && stageH.isFinite && dpr.isFinite,
+              stageW > 0, stageH > 0, dpr > 0 else { return nil }
+        let w = min(Int((stageW * dpr).rounded()), 16384)
+        let h = min(Int((stageH * dpr).rounded()), 16384)
+        return (w, h)
     }
 }

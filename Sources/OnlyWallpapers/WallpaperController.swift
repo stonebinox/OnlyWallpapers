@@ -249,11 +249,9 @@ final class WallpaperController {
             let geo = slices[i]
 
             if let existing = existingByID[desc.displayID] {
-                // UPDATE survivor
-                if !isFakeMode {
-                    existing.window?.updateFrame(desc.frame)
-                    existing.webView?.applyGeometry(geo, gen: gen)
-                }
+                // UPDATE survivor: geometry always applied so overlay backing resizes; window frame skipped in fake mode.
+                if !isFakeMode { existing.window?.updateFrame(desc.frame) }
+                existing.webView?.applyGeometry(geo, gen: gen)
                 newRecords.append(WallpaperScreenRecord(
                     displayID: desc.displayID,
                     descriptor: desc,

@@ -73,35 +73,31 @@ private nonisolated func applyOffsets(_ base: MoodParams, weather: WeatherInput?
     var B = base.brightness
     var S = base.saturate
     var C = base.contrast
+    var H = base.hueRotate
     var Se = base.sepia
 
     if let w = weather {
         let cloud = min(max(w.cloudCover / 100.0, 0), 1)
-        S -= 0.2 * cloud
-        B -= 0.08 * cloud
-
-        // FIX 8: precipitation additive desaturate+dim regardless of WMO code.
-        // Normalize to [0,1] with 50mm/h as the heavy ceiling.
-        let precip = min(max(w.precipitation / 50.0, 0), 1)
-        S -= 0.10 * precip
-        B -= 0.04 * precip
+        S -= 0.33 * cloud
+        B -= 0.13 * cloud
 
         switch WeatherGroup(code: w.weatherCode) {
-        case .fog:   C -= 0.05
-        case .rain:  S -= 0.08; B -= 0.04
-        case .storm: S -= 0.15; B -= 0.08
-        case .snow:  B += 0.05; S -= 0.05
+        case .fog:   C -= 0.06; S -= 0.06
+        case .rain:  B -= 0.06; S -= 0.10; H -= 4
+        case .storm: B -= 0.10; S -= 0.18; H -= 8
+        case .snow:  B += 0.06; S -= 0.08; H -= 4
         case .clear, .cloudy: break
         }
     }
 
-    B  = min(max(B,  0.85), 1.08)
-    S  = min(max(S,  0.70), 1.15)
+    B  = min(max(B,  0.72), 1.08)
+    S  = min(max(S,  0.55), 1.15)
     C  = min(max(C,  1.00), 1.15)
+    H  = min(max(H, -10.0), 0.0)
     Se = min(max(Se, 0.00), 0.12)
     if C < 1.01 { C = 1.01 }   // live-floor: filter is always active
 
-    return MoodParams(brightness: B, saturate: S, contrast: C, hueRotate: base.hueRotate, sepia: Se)
+    return MoodParams(brightness: B, saturate: S, contrast: C, hueRotate: H, sepia: Se)
 }
 
 // Always emits exactly 5 functions in the same order.

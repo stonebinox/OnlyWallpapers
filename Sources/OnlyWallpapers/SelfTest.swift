@@ -208,7 +208,7 @@ enum SelfTest {
         check("mood-storm-more-desaturated-than-clear", stormParams.saturate < clearParams.saturate)
         check("mood-storm-dimmer-than-cloudy", stormParams.brightness <= cloudParams.brightness)
         check("mood-storm-contrast-floor", stormParams.contrast >= 1.01)
-        check("mood-storm-B-clamp", stormParams.brightness >= 0.85)
+        check("mood-storm-B-clamp", stormParams.brightness >= 0.72)
 
         // Snow (code=71, cloud=0, precip=0) at noon: brighter than clear (B+=0.05), clamped to 1.08
         let snowW = WeatherInput(weatherCode: 71, cloudCover: 0, precipitation: 0)
@@ -219,25 +219,18 @@ enum SelfTest {
 
         // Polar guard: sunset <= sunrise -> returns clamped profile, no divide
         let polarParams = moodParams(nowEpoch: noon, sunriseEpoch: 1000, sunsetEpoch: 500, weather: nil)
-        check("mood-polar-B-in-range", polarParams.brightness >= 0.85 && polarParams.brightness <= 1.08)
+        check("mood-polar-B-in-range", polarParams.brightness >= 0.72 && polarParams.brightness <= 1.08)
         check("mood-polar-contrast-floor", polarParams.contrast >= 1.01)
         check("mood-polar-H-pinned", polarParams.hueRotate == 0)
 
         // Clamps: storm + night cannot go below floor
         let stormNight = moodParams(nowEpoch: night, sunriseEpoch: sunrise, sunsetEpoch: sunset,
                                     weather: WeatherInput(weatherCode: 99, cloudCover: 100, precipitation: 30))
-        check("mood-clamp-B-lower", stormNight.brightness >= 0.85)
-        check("mood-clamp-S-lower", stormNight.saturate >= 0.70)
+        check("mood-clamp-B-lower", stormNight.brightness >= 0.72)
+        check("mood-clamp-S-lower", stormNight.saturate >= 0.55)
         check("mood-clamp-C-floor", stormNight.contrast >= 1.01)
         check("mood-clamp-Se-upper", stormNight.sepia <= 0.12)
 
-        // Precipitation test (FIX 8): mild WMO code but heavy precipitation mutes more than no precipitation
-        let mildNoPrecip = WeatherInput(weatherCode: 1, cloudCover: 20, precipitation: 0)
-        let mildHeavyPrecip = WeatherInput(weatherCode: 1, cloudCover: 20, precipitation: 40)
-        let mildNoPrecipParams = moodParams(nowEpoch: noon, sunriseEpoch: sunrise, sunsetEpoch: sunset, weather: mildNoPrecip)
-        let mildHeavyPrecipParams = moodParams(nowEpoch: noon, sunriseEpoch: sunrise, sunsetEpoch: sunset, weather: mildHeavyPrecip)
-        check("mood-precip-desaturates", mildHeavyPrecipParams.saturate < mildNoPrecipParams.saturate)
-        check("mood-precip-dims", mildHeavyPrecipParams.brightness < mildNoPrecipParams.brightness)
 
         // cssFilter: exact string verification for non-neutral
         let noonFilter = cssFilter(noonParams)
@@ -323,30 +316,34 @@ enum SelfTest {
         let fogG = moodParams(nowEpoch: grpNoon, sunriseEpoch: grpSunrise, sunsetEpoch: grpSunset,
                                weather: WeatherInput(weatherCode: 45, cloudCover: 0, precipitation: 0))
         check("exact-fog-B",  abs(fogG.brightness - 1.0500) < grpEps)
-        check("exact-fog-S",  abs(fogG.saturate   - 1.1000) < grpEps)
-        check("exact-fog-C",  abs(fogG.contrast   - 1.0100) < grpEps)  // 1.05-0.05=1.00 -> floor 1.01
+        check("exact-fog-S",  abs(fogG.saturate   - 1.0400) < grpEps)
+        check("exact-fog-C",  abs(fogG.contrast   - 1.0100) < grpEps)  // 1.05-0.06=0.99 -> floor 1.01
         check("exact-fog-Se", abs(fogG.sepia)                < grpEps)
+        check("exact-fog-H",  fogG.hueRotate == 0)
 
         let rainG = moodParams(nowEpoch: grpNoon, sunriseEpoch: grpSunrise, sunsetEpoch: grpSunset,
                                 weather: WeatherInput(weatherCode: 61, cloudCover: 0, precipitation: 0))
-        check("exact-rain-B",  abs(rainG.brightness - 1.0100) < grpEps)  // 1.05-0.04=1.01
-        check("exact-rain-S",  abs(rainG.saturate   - 1.0200) < grpEps)  // 1.10-0.08=1.02
+        check("exact-rain-B",  abs(rainG.brightness - 0.9900) < grpEps)  // 1.05-0.06=0.99
+        check("exact-rain-S",  abs(rainG.saturate   - 1.0000) < grpEps)  // 1.10-0.10=1.00
         check("exact-rain-C",  abs(rainG.contrast   - 1.0500) < grpEps)
         check("exact-rain-Se", abs(rainG.sepia)                < grpEps)
+        check("exact-rain-H",  abs(rainG.hueRotate - (-4.0)) < grpEps)
 
         let stormG = moodParams(nowEpoch: grpNoon, sunriseEpoch: grpSunrise, sunsetEpoch: grpSunset,
                                  weather: WeatherInput(weatherCode: 95, cloudCover: 0, precipitation: 0))
-        check("exact-storm-B",  abs(stormG.brightness - 0.9700) < grpEps)  // 1.05-0.08=0.97
-        check("exact-storm-S",  abs(stormG.saturate   - 0.9500) < grpEps)  // 1.10-0.15=0.95
+        check("exact-storm-B",  abs(stormG.brightness - 0.9500) < grpEps)  // 1.05-0.10=0.95
+        check("exact-storm-S",  abs(stormG.saturate   - 0.9200) < grpEps)  // 1.10-0.18=0.92
         check("exact-storm-C",  abs(stormG.contrast   - 1.0500) < grpEps)
         check("exact-storm-Se", abs(stormG.sepia)                < grpEps)
+        check("exact-storm-H",  abs(stormG.hueRotate - (-8.0)) < grpEps)
 
         let snowG = moodParams(nowEpoch: grpNoon, sunriseEpoch: grpSunrise, sunsetEpoch: grpSunset,
                                 weather: WeatherInput(weatherCode: 71, cloudCover: 0, precipitation: 0))
-        check("exact-snow-B",  abs(snowG.brightness - 1.0800) < grpEps)  // 1.05+0.05=1.10->clamp 1.08
-        check("exact-snow-S",  abs(snowG.saturate   - 1.0500) < grpEps)  // 1.10-0.05=1.05
+        check("exact-snow-B",  abs(snowG.brightness - 1.0800) < grpEps)  // 1.05+0.06=1.11->clamp 1.08
+        check("exact-snow-S",  abs(snowG.saturate   - 1.0200) < grpEps)  // 1.10-0.08=1.02
         check("exact-snow-C",  abs(snowG.contrast   - 1.0500) < grpEps)
         check("exact-snow-Se", abs(snowG.sepia)                < grpEps)
+        check("exact-snow-H",  abs(snowG.hueRotate - (-4.0)) < grpEps)
 
         // MARK: - Config merge regression tests
         // Create temp dir, override appSupportRoot, run tests, restore.

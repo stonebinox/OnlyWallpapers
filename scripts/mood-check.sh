@@ -152,7 +152,7 @@ else
             fi
 
             # All filter strings must be identical across windows.
-            unique_filters=$(printf '%s\n' "$mood_out" | sed 's/.*filter=//;' | sort -u | grep -c . || true); unique_filters=${unique_filters:-0}
+            unique_filters=$(printf '%s\n' "$mood_out" | grep ' filter=' | sed 's/.*filter=//;' | sort -u | grep -c . || true); unique_filters=${unique_filters:-0}
             if [[ $unique_filters -ne 1 ]]; then
                 echo "[hook] FAIL: filter strings not identical across windows (unique=$unique_filters)"
                 hook_ok=0
@@ -163,7 +163,7 @@ else
 
             # Filter string must match the 5-function pattern.
             filter_val=$(printf '%s\n' "$mood_out" | head -1 | sed 's/.*filter=//')
-            if ! printf '%s\n' "$filter_val" | grep -qE '^brightness\([0-9.]+\) saturate\([0-9.]+\) contrast\([0-9.]+\) hue-rotate\([0-9.]+deg\) sepia\([0-9.]+\)$'; then
+            if ! printf '%s\n' "$filter_val" | grep -qE '^brightness\([0-9.]+\) saturate\([0-9.]+\) contrast\([0-9.]+\) hue-rotate\(-?[0-9.]+deg\) sepia\([0-9.]+\)$'; then
                 echo "[hook] FAIL: filter does not match 5-function pattern: $filter_val"
                 hook_ok=0
             else
@@ -201,7 +201,7 @@ else
                 af_B=$(printf '%s\n' "$af_inline" | grep -oE 'brightness\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 af_S=$(printf '%s\n' "$af_inline" | grep -oE 'saturate\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 af_C=$(printf '%s\n' "$af_inline" | grep -oE 'contrast\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
-                af_H=$(printf '%s\n' "$af_inline" | grep -oE 'hue-rotate\([0-9.]+deg\)' | grep -oE '[0-9.]+' || echo "")
+                af_H=$(printf '%s\n' "$af_inline" | grep -oE 'hue-rotate\(-?[0-9.]+deg\)' | sed 's/hue-rotate(//;s/deg)//' || echo "")
                 af_Se=$(printf '%s\n' "$af_inline" | grep -oE 'sepia\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 if [[ -z "$af_B" || -z "$af_S" || -z "$af_C" || -z "$af_H" || -z "$af_Se" ]]; then
                     echo "[hook] FAIL: could not parse all inline filter components: '$af_inline'"
@@ -285,7 +285,7 @@ else
             echo "[broadcast] post-broadcast MOOD lines for all $win_count window(s)"
         fi
 
-        unique_filters=$(printf '%s\n' "$post_mood" | sed 's/.*filter=//;' | sort -u | grep -c . || true); unique_filters=${unique_filters:-0}
+        unique_filters=$(printf '%s\n' "$post_mood" | grep ' filter=' | sed 's/.*filter=//;' | sort -u | grep -c . || true); unique_filters=${unique_filters:-0}
         if [[ $unique_filters -ne 1 ]]; then
             echo "[broadcast] FAIL: post-broadcast filter not identical across windows"
             bcast_ok=0
@@ -397,7 +397,7 @@ else
                 echo "[fixture] FAIL: inline= field missing in MOOD_APPLIED line"
                 fixture_ok=0
             else
-                MOOD_RE='^brightness\([0-9.]+\) saturate\([0-9.]+\) contrast\([0-9.]+\) hue-rotate\([0-9.]+deg\) sepia\([0-9.]+\)$'
+                MOOD_RE='^brightness\([0-9.]+\) saturate\([0-9.]+\) contrast\([0-9.]+\) hue-rotate\(-?[0-9.]+deg\) sepia\([0-9.]+\)$'
                 if ! printf '%s\n' "$inline_filter" | grep -qE "$MOOD_RE"; then
                     echo "[fixture] FAIL: inline filter does not match 5-function pattern: '$inline_filter'"
                     fixture_ok=0
@@ -406,7 +406,7 @@ else
                 fi
             fi
             # Assert exact storm tuple by parsing from inline= DOM filter for EVERY window.
-            # Night + storm(95) + cloud=100 + precip=5: B=0.85 S=0.70 C=1.05 H=0 Se=0.
+            # Night + storm(95) + cloud=100 + precip=5: B=0.72 S=0.55 C=1.05 H=-8 Se=0.
             tuple_ok=1
             while IFS= read -r aline; do
                 [[ -z "$aline" ]] && continue
@@ -418,15 +418,15 @@ else
                 af_B=$(printf '%s\n' "$af_inline" | grep -oE 'brightness\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 af_S=$(printf '%s\n' "$af_inline" | grep -oE 'saturate\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 af_C=$(printf '%s\n' "$af_inline" | grep -oE 'contrast\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
-                af_H=$(printf '%s\n' "$af_inline" | grep -oE 'hue-rotate\([0-9.]+deg\)' | grep -oE '[0-9.]+' || echo "")
+                af_H=$(printf '%s\n' "$af_inline" | grep -oE 'hue-rotate\(-?[0-9.]+deg\)' | sed 's/hue-rotate(//;s/deg)//' || echo "")
                 af_Se=$(printf '%s\n' "$af_inline" | grep -oE 'sepia\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 if [[ -z "$af_B" || -z "$af_S" || -z "$af_C" || -z "$af_H" || -z "$af_Se" ]]; then
                     echo "[fixture] FAIL: could not parse inline filter components: '$af_inline'"
                     tuple_ok=0; continue
                 fi
-                ok=$(awk "BEGIN{b=($af_B>0.849&&$af_B<0.851);s=($af_S>0.699&&$af_S<0.701);c=($af_C>1.049&&$af_C<1.051);h=($af_H>=-0.001&&$af_H<0.001);se=($af_Se>=-0.001&&$af_Se<0.001);print(b&&s&&c&&h&&se)?1:0}")
+                ok=$(awk "BEGIN{b=($af_B>0.7195&&$af_B<0.7205);s=($af_S>0.5495&&$af_S<0.5505);c=($af_C>1.049&&$af_C<1.051);h=($af_H>-8.001&&$af_H<-7.999);se=($af_Se>=-0.001&&$af_Se<0.001);print(b&&s&&c&&h&&se)?1:0}")
                 if [[ "$ok" != "1" ]]; then
-                    echo "[fixture] FAIL: inline storm tuple mismatch: B=$af_B S=$af_S C=$af_C H=$af_H Se=$af_Se (expected B~0.85 S~0.70 C~1.05 H~0 Se~0)"
+                    echo "[fixture] FAIL: inline storm tuple mismatch: B=$af_B S=$af_S C=$af_C H=$af_H Se=$af_Se (expected B~0.72 S~0.55 C~1.05 H~-8 Se~0)"
                     tuple_ok=0
                 fi
             done <<< "$applied_out"
@@ -554,9 +554,8 @@ else
             # Storm tuple check: assert only the FINAL MOOD_APPLIED line per window matches storm bounds.
             # The app emits an initial time-only mood before the async fake fetch resolves; an earlier
             # line for the same window with a different tuple is tolerated. Only the last one counts.
-            # Fixture: cloud=100, precip=5.0, weather_code=95.
-            # Sun epochs are stale (2024); today's 06:00/18:00 synthesized.
-            # B: 0.85 <= B < 0.888. S: 0.70 <= S < 0.742. C: 1.05. H: 0. Se: 0..0.08.
+            # Fixture: cloud=100, precip=5.0, weather_code=95. Sun epochs are stale (2024); today 06:00/18:00 synthesized.
+            # New offsets: B in [0.72,0.82] (night-floor to near-noon), S in [0.55,0.59], hue=-8.
             tuple_ok=1
             while IFS= read -r wnum; do
                 [[ -z "$wnum" ]] && continue
@@ -574,15 +573,15 @@ else
                 af_B=$(printf '%s\n' "$af_inline" | grep -oE 'brightness\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 af_S=$(printf '%s\n' "$af_inline" | grep -oE 'saturate\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 af_C=$(printf '%s\n' "$af_inline" | grep -oE 'contrast\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
-                af_H=$(printf '%s\n' "$af_inline" | grep -oE 'hue-rotate\([0-9.]+deg\)' | grep -oE '[0-9.]+' || echo "")
+                af_H=$(printf '%s\n' "$af_inline" | grep -oE 'hue-rotate\(-?[0-9.]+deg\)' | sed 's/hue-rotate(//;s/deg)//' || echo "")
                 af_Se=$(printf '%s\n' "$af_inline" | grep -oE 'sepia\([0-9.]+\)' | grep -oE '[0-9.]+' || echo "")
                 if [[ -z "$af_B" || -z "$af_S" || -z "$af_C" || -z "$af_H" || -z "$af_Se" ]]; then
                     echo "[prodfetch] FAIL: could not parse inline filter components for win=$wnum: '$af_inline'"
                     tuple_ok=0; continue
                 fi
-                ok=$(awk "BEGIN{b=($af_B>=0.849&&$af_B<0.888);s=($af_S>=0.699&&$af_S<0.742);c=($af_C>1.049&&$af_C<1.051);h=($af_H>=-0.001&&$af_H<0.001);se=($af_Se>=-0.001&&$af_Se<=0.082);print(b&&s&&c&&h&&se)?1:0}")
+                ok=$(awk "BEGIN{b=($af_B>=0.719&&$af_B<=0.821);s=($af_S>=0.549&&$af_S<=0.591);c=($af_C>1.049&&$af_C<1.051);h=($af_H>-8.001&&$af_H<-7.999);se=($af_Se>=-0.001&&$af_Se<=0.082);print(b&&s&&c&&h&&se)?1:0}")
                 if [[ "$ok" != "1" ]]; then
-                    echo "[prodfetch] FAIL: storm tuple check for win=$wnum: B=$af_B S=$af_S C=$af_C H=$af_H Se=$af_Se (need B in [0.849,0.888) S in [0.699,0.742) C~1.05 H~0 Se in [0,0.082])"
+                    echo "[prodfetch] FAIL: storm tuple check for win=$wnum: B=$af_B S=$af_S C=$af_C H=$af_H Se=$af_Se (need B in [0.719,0.821] S in [0.549,0.591] C~1.05 H~-8 Se in [0,0.082])"
                     tuple_ok=0
                 fi
             done <<< "$applied_wins"

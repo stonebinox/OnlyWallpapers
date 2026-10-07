@@ -70,7 +70,7 @@
     var bm = /brightness\(([\d.]+)\)/.exec(f);
     var sm = /saturate\(([\d.]+)\)/.exec(f);
     var cm = /contrast\(([\d.]+)\)/.exec(f);
-    var hm = /hue-rotate\(([\d.]+)deg\)/.exec(f);
+    var hm = /hue-rotate\((-?[\d.]+)deg\)/.exec(f);
     var em = /sepia\(([\d.]+)\)/.exec(f);
     return {
       B:  bm ? parseFloat(bm[1]) : NaN,

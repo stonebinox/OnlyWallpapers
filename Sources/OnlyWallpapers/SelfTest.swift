@@ -421,7 +421,13 @@ enum SelfTest {
         check("openMeteoURL-lon-2dp", query.contains("longitude=-122.42"))
         check("openMeteoURL-timeformat", query.contains("timeformat=unixtime"))
         check("openMeteoURL-timezone", query.contains("timezone=auto"))
-        check("openMeteoURL-current-fields", query.contains("weather_code") && query.contains("cloud_cover") && query.contains("precipitation") && query.contains("is_day"))
+        let currentParam = query.components(separatedBy: "&").first(where: { $0.hasPrefix("current=") }) ?? ""
+        let currentFields = String(currentParam.dropFirst("current=".count)).components(separatedBy: ",")
+        check("openMeteoURL-current-no-time", !currentFields.contains("time"))
+        check("openMeteoURL-current-has-weather_code", currentFields.contains("weather_code"))
+        check("openMeteoURL-current-has-cloud_cover", currentFields.contains("cloud_cover"))
+        check("openMeteoURL-current-has-precipitation", currentFields.contains("precipitation"))
+        check("openMeteoURL-current-has-is_day", currentFields.contains("is_day"))
         check("openMeteoURL-daily-fields", query.contains("daily=sunrise,sunset") || (query.contains("daily=") && query.contains("sunrise") && query.contains("sunset")))
 
         // MARK: - Weather cache round-trip selftest
@@ -546,23 +552,26 @@ enum SelfTest {
         check("stale-sun-weather-desats", synStorm.saturate < synNoWx.saturate)
 
         // MARK: - parseOpenMeteoResponse parser tests
-        // Canonical Open-Meteo unixtime response (epoch seconds for sunrise/sunset).
-        let canonicalJSON = """
-{"current":{"weather_code":61,"cloud_cover":75,"precipitation":2.5,"is_day":1,"time":1728388800},"daily":{"sunrise":[1728367200],"sunset":[1728410400]}}
+        // Real captured Open-Meteo response (Bangalore, 2026-10-07, unixtime).
+        let realFixtureJSON = """
+{"latitude":13.04,"longitude":77.716,"utc_offset_seconds":19800,"timezone":"Asia/Kolkata","current_units":{"time":"unixtime","interval":"seconds","weather_code":"wmo code","cloud_cover":"%","precipitation":"mm","is_day":""},"current":{"time":1791387000,"interval":900,"weather_code":1,"cloud_cover":33,"precipitation":0.0,"is_day":0},"daily_units":{"time":"unixtime","sunrise":"unixtime","sunset":"unixtime"},"daily":{"time":[1791311400],"sunrise":[1791333521],"sunset":[1791376507]}}
 """
-        let canonicalData = canonicalJSON.data(using: .utf8)!
-        let parsedEntry = MoodController.parseOpenMeteoResponse(data: canonicalData, lat: 37.77, lon: -122.42)
-        check("parseOpenMeteo-returns-non-nil", parsedEntry != nil)
-        if let e = parsedEntry {
-            check("parseOpenMeteo-lat",           abs(e.lat - 37.77)      < 0.001)
-            check("parseOpenMeteo-lon",           abs(e.lon - (-122.42))  < 0.001)
-            check("parseOpenMeteo-weatherCode",   e.weatherCode == 61)
-            check("parseOpenMeteo-cloudCover",    abs(e.cloudCover - 75.0) < 0.01)
-            check("parseOpenMeteo-precipitation", abs(e.precipitation - 2.5) < 0.001)
-            check("parseOpenMeteo-sunriseEpoch",  abs(e.sunriseEpoch - 1728367200) < 0.01)
-            check("parseOpenMeteo-sunsetEpoch",   abs(e.sunsetEpoch  - 1728410400) < 0.01)
-            check("parseOpenMeteo-fetchedAt-positive", e.fetchedAt > 0)
+        let realFixtureData = realFixtureJSON.data(using: .utf8)!
+        let parsedRealEntry = MoodController.parseOpenMeteoResponse(data: realFixtureData, lat: 13.04, lon: 77.72)
+        check("parseOpenMeteo-real-returns-non-nil", parsedRealEntry != nil)
+        if let e = parsedRealEntry {
+            check("parseOpenMeteo-real-weatherCode",   e.weatherCode == 1)
+            check("parseOpenMeteo-real-cloudCover",    abs(e.cloudCover - 33.0) < 0.01)
+            check("parseOpenMeteo-real-precipitation", abs(e.precipitation - 0.0) < 0.001)
+            check("parseOpenMeteo-real-sunriseEpoch",  abs(e.sunriseEpoch - 1791333521) < 0.01)
+            check("parseOpenMeteo-real-sunsetEpoch",   abs(e.sunsetEpoch  - 1791376507) < 0.01)
+            check("parseOpenMeteo-real-fetchedAt-positive", e.fetchedAt > 0)
         }
+        // current.time from the real fixture is readable as the now-epoch source (used by hook mode).
+        let realFixtureObj = try? JSONSerialization.jsonObject(with: realFixtureData) as? [String: Any]
+        let realFixtureCurrent = realFixtureObj?["current"] as? [String: Any]
+        let realFixtureNowEpoch = (realFixtureCurrent?["time"] as? NSNumber)?.doubleValue
+        check("parseOpenMeteo-real-current-time", abs((realFixtureNowEpoch ?? 0) - 1791387000) < 0.01)
 
         // Malformed JSON returns nil, does not crash.
         let malformedData = "not-json".data(using: .utf8)!

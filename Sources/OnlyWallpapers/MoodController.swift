@@ -293,7 +293,7 @@ final class MoodController: NSObject {
     }
 
     nonisolated static func openMeteoURL(lat: Double, lon: Double) -> String {
-        return "https://api.open-meteo.com/v1/forecast?latitude=\(lat)&longitude=\(lon)&timezone=auto&timeformat=unixtime&forecast_days=1&current=weather_code,cloud_cover,precipitation,is_day,time&daily=sunrise,sunset"
+        return "https://api.open-meteo.com/v1/forecast?latitude=\(lat)&longitude=\(lon)&timezone=auto&timeformat=unixtime&forecast_days=1&current=weather_code,cloud_cover,precipitation,is_day&daily=sunrise,sunset"
     }
 
     private func fetchWeather(lat: Double, lon: Double) async {

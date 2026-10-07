@@ -4,6 +4,7 @@ import CryptoKit
 enum AppStorageManager {
 
     static var seedFailed: Bool = false
+    static var testingRootOverride: URL? = nil
 
     struct FramingConfig {
         var zoom: Double
@@ -42,16 +43,20 @@ enum AppStorageManager {
         )
     }
 
+    // MARK: - Merge-based config.json helpers
+
+    private static func readConfigDict() -> [String: Any] {
+        let url = appSupportRoot().appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return obj
+    }
+
     @discardableResult
-    static func writeFraming(_ cfg: FramingConfig) -> Bool {
-        let clamped = clampFraming(cfg)
-        let r2: (Double) -> Double = { ($0 * 100).rounded() / 100 }
-        let obj: [String: Any] = [
-            "zoom": r2(clamped.zoom),
-            "panX": r2(clamped.panX),
-            "panY": r2(clamped.panY)
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return false }
+    private static func writeConfigDict(_ dict: [String: Any]) -> Bool {
+        guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return false }
         let url = appSupportRoot().appendingPathComponent("config.json")
         let partial = appSupportRoot().appendingPathComponent("config.json.partial")
         do {
@@ -65,12 +70,81 @@ enum AppStorageManager {
             return true
         } catch {
             try? FileManager.default.removeItem(at: partial)
-            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_FRAMING persist=fail error=\(error.localizedDescription)\n".utf8))
             return false
         }
     }
 
+    @discardableResult
+    static func writeFraming(_ cfg: FramingConfig) -> Bool {
+        let clamped = clampFraming(cfg)
+        let r2: (Double) -> Double = { ($0 * 100).rounded() / 100 }
+        var obj = readConfigDict()
+        obj["zoom"] = r2(clamped.zoom)
+        obj["panX"] = r2(clamped.panX)
+        obj["panY"] = r2(clamped.panY)
+        let ok = writeConfigDict(obj)
+        if !ok {
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_FRAMING persist=fail\n".utf8))
+        }
+        return ok
+    }
+
+    // MARK: - Weather cache (stored under "weatherCache" key)
+
+    static func readWeatherCache() -> WeatherCacheEntry? {
+        let obj = readConfigDict()
+        guard let wc = obj["weatherCache"] as? [String: Any] else { return nil }
+        func d(_ k: String) -> Double? { (wc[k] as? NSNumber)?.doubleValue }
+        func n(_ k: String) -> Int?    { (wc[k] as? NSNumber)?.intValue }
+        guard let fa = d("fetchedAt"), fa.isFinite,
+              let lat = d("lat"), lat.isFinite,
+              let lon = d("lon"), lon.isFinite,
+              let sr  = d("sunriseEpoch"), sr.isFinite,
+              let ss  = d("sunsetEpoch"),  ss.isFinite,
+              let wcode = n("weatherCode"),
+              let cc = d("cloudCover"), cc.isFinite,
+              let pr = d("precipitation"), pr.isFinite else { return nil }
+        return WeatherCacheEntry(fetchedAt: fa, lat: lat, lon: lon,
+                                 sunriseEpoch: sr, sunsetEpoch: ss,
+                                 weatherCode: wcode, cloudCover: cc, precipitation: pr)
+    }
+
+    @discardableResult
+    static func writeWeatherCache(_ entry: WeatherCacheEntry) -> Bool {
+        var obj = readConfigDict()
+        obj["weatherCache"] = [
+            "fetchedAt":    entry.fetchedAt,
+            "lat":          entry.lat,
+            "lon":          entry.lon,
+            "sunriseEpoch": entry.sunriseEpoch,
+            "sunsetEpoch":  entry.sunsetEpoch,
+            "weatherCode":  entry.weatherCode,
+            "cloudCover":   entry.cloudCover,
+            "precipitation": entry.precipitation
+        ] as [String: Any]
+        return writeConfigDict(obj)
+    }
+
+    // FIX 9: range-check lat/lon to reject out-of-range stored values.
+    static func readLatLon() -> (lat: Double, lon: Double)? {
+        let obj = readConfigDict()
+        guard let lat = (obj["lat"] as? NSNumber)?.doubleValue,
+              lat.isFinite, lat >= -90, lat <= 90,
+              let lon = (obj["lon"] as? NSNumber)?.doubleValue,
+              lon.isFinite, lon >= -180, lon <= 180 else { return nil }
+        return (lat, lon)
+    }
+
+    @discardableResult
+    static func writeLatLon(lat: Double, lon: Double) -> Bool {
+        var obj = readConfigDict()
+        obj["lat"] = lat
+        obj["lon"] = lon
+        return writeConfigDict(obj)
+    }
+
     static func appSupportRoot() -> URL {
+        if let override = testingRootOverride { return override }
         let env = ProcessInfo.processInfo.environment
         if let override = env["OW_APP_SUPPORT_DIR"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)

@@ -13,19 +13,29 @@ positioning (ow-blz.2) is in place: the one video is sliced across all displays 
 injected per-screen geometry and `left/top` positioning of `#stage`. The asset-dir
 resolution (ow-94b.3 + ow-aqx.2) is wired: `WALLPAPER_WEB_DIR`, else a seeded
 app-storage web dir (set via the "Choose video..." menu), else the `Bundle.module`
-bundled copy. Still planned: mood logic (Epic D).
+bundled copy. The adaptive mood tint (ow-aqx.15 Stage 1) is implemented: the native
+layer drives a time-of-day + live-weather CSS filter that the page applies to `#bg`,
+identical on every screen (see Adaptive Mood). Still planned: overlay-canvas particle
+effects (Epic D, ow-aqx.3).
 
 ## Files
 - **index.html**: a `#stage` containing the `<video id="bg">` (muted, playsinline,
   loop, autoplay) and an overlay `<canvas>` reserved for future effects (inert).
-- **style.css**: full-bleed video with `object-fit: cover`; a `filter` on the video
-  (currently `brightness(1.01)`, the validated recomposite path) is the live-control
-  knob for the look (saturate, brightness, hue-rotate, blur). Black fallback until
-  the video decodes (the WKWebView base is opaque on macOS 26, see Transparency).
-- **wallpaper.js**: two IIFEs. A geometry IIFE reads `window.__wallpaper` and
-  positions `#stage` by `left/top` to this screen's slice (recording the real applied
-  rect in `window.__wallpaperApplied`); then an autoplay IIFE kicks `play()` with
-  `canplay`/`loadeddata` retries and an `ended` belt. Mood logic is still Epic D.
+- **style.css**: full-bleed video with `object-fit: cover`; the `filter` on `#bg` is
+  the live-control knob for the look. Its default is now the mood identity 5-tuple
+  `brightness(1.01) saturate(1) contrast(1.01) hue-rotate(0deg) sepia(0)` (same five
+  functions the mood mapper always emits, so changes interpolate instead of snapping),
+  with `transition: filter 2s ease` so mood shifts ease. The contrast >= 1.01 floor
+  keeps the validated recomposite path live (ow-94b.5). Black fallback until the video
+  decodes (the WKWebView base is opaque on macOS 26, see Transparency).
+- **wallpaper.js**: four IIFEs. A geometry IIFE reads `window.__wallpaper` and
+  positions `#stage` by `left/top` to this screen's slice (recording the applied rect
+  in `window.__wallpaperApplied`); a framing IIFE applies `window.__wallpaperFraming`;
+  an autoplay IIFE kicks `play()` with `canplay`/`loadeddata` retries and an `ended`
+  belt; and a MOOD IIFE (ow-aqx.15) exposes `window.__setWallpaperMood`, validates the
+  incoming filter against the 5-function shape, applies it to `#bg.style.filter`
+  (transition off on the first apply, then re-enabled so it does not snap on load), and
+  records the parsed numbers in `window.__moodApplied`.
 
 ## The Slice Transform (ow-blz.2, done)
 The shell injects, at document start, a per-screen payload via a `WKUserScript`:
@@ -63,6 +73,26 @@ document-start; it is NOT called from the geometry IIFE (percent sizing reflows 
 resize, and touching `#bg` on the hot-plug survivor path risks a blank). Settings persist
 in `config.json` and inject identically on every screen, so framing stays continuous
 across the bezel. See swift-shell/overview.md for persistence + injection.
+
+## Adaptive Mood (ow-aqx.15 Stage 1, done)
+The wallpaper tints itself to the local time of day and the live weather: cooler and
+dimmer at night, warmer at dawn/dusk, muted and dim on cloudy/stormy days. The native
+`MoodController` owns all inputs (see swift-shell/overview.md): opt-in CoreLocation,
+Open-Meteo, and a pure mapper. The web layer only APPLIES a pre-validated CSS filter
+string to `#bg`, identically on every screen, so every slice of the one video matches.
+- The native side injects `window.__wallpaperMood` at document-start (so a newcomer
+  screen never paints bare identity) and broadcasts runtime updates via
+  `window.__setWallpaperMood`. The mapper always emits the SAME five functions in the
+  same order; the only property touched is `filter`, which composes cleanly with
+  framing (size/position) and geometry (`left/top`) since those are different
+  properties.
+- The filter is the only validated-safe dynamic knob (ow-94b.5, static case). An
+  ANIMATED filter (the 2s ease) across N union-sized layers was NOT covered by that
+  spike and is a Phase-5 real-hardware watch (confirm the video does not blank/hitch
+  through a transition on two displays).
+- Verification: `window.__moodApplied` (parsed numbers) plus the inline
+  `bg.style.filter` read-back are logged per window as `ONLYWALLPAPERS_MOOD_APPLIED`,
+  and asserted identical across screens by `scripts/mood-check.sh`.
 
 ## Autoplay
 The `<video>` needs `muted` + `playsinline` and an explicit `.play()` call (retried

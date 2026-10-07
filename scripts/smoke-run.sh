@@ -108,7 +108,7 @@ trap cleanup EXIT
 # --- Step 3: launch binary in background ---
 echo "[launch] Starting $BIN..."
 OW_SUPPORT_TMP="$(mktemp -d)"
-OW_APP_SUPPORT_DIR="$OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$BIN" >"$TMPOUT" 2>&1 &
+OW_APP_SUPPORT_DIR="$OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON "$BIN" >"$TMPOUT" 2>&1 &
 PID=$!
 echo "[launch] PID: $PID"
 

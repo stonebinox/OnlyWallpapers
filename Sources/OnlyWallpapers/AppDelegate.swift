@@ -4,6 +4,7 @@ import Darwin
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sigintSource: DispatchSourceSignal?
     private var wallpaperController: WallpaperController?
+    private var moodController: MoodController?
     private var sigUSR1Source: DispatchSourceSignal?
     private var sigUSR2Source: DispatchSourceSignal?
     private var spikeActivity: NSObjectProtocol?
@@ -124,6 +125,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.sigUSR1Source = usr1Src
             }
 
+            let mood = MoodController()
+            mood.onMoodUpdate = { [weak controller] params in
+                controller?.applyMoodToAll(params)
+            }
+            // FIX 1: wire onMoodUpdate before calling start() so the first broadcast is not lost.
+            moodController = mood
+
             if env["OW_FRAMING_TEST"] == "1" {
                 signal(SIGUSR2, SIG_IGN)
                 let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
@@ -164,13 +172,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 usr2Src.resume()
                 self.sigUSR2Source = usr2Src
+            } else if env["OW_MOOD_TEST"] == "1" {
+                signal(SIGUSR2, SIG_IGN)
+                let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+                usr2Src.setEventHandler { [weak controller] in
+                    guard let controller else { return }
+                    controller.applyMoodToAll(controller.currentMood)
+                }
+                usr2Src.resume()
+                self.sigUSR2Source = usr2Src
             }
 
             let statusItem = StatusItemController(pickerEnabled: pickerEnabled, source: pickerSource, wallpaperController: controller)
             statusItem.onChooseVideo = { [weak controller] in
                 controller?.reloadVideo()
             }
+            statusItem.onRequestLocation = { [weak mood] in
+                mood?.requestLocationOptIn()
+            }
             statusItemController = statusItem
+            mood.start()
         }
     }
 }

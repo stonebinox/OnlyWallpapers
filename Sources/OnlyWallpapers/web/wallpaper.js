@@ -62,6 +62,48 @@
   tryPlay();
 })();
 
+(function () {
+  var _moodApplied = false;
+  var MOOD_RE = /^brightness\(\S+\)\s+saturate\(\S+\)\s+contrast\(\S+\)\s+hue-rotate\(\S+\)\s+sepia\(\S+\)$/;
+
+  function parseMoodNums(f) {
+    var bm = /brightness\(([\d.]+)\)/.exec(f);
+    var sm = /saturate\(([\d.]+)\)/.exec(f);
+    var cm = /contrast\(([\d.]+)\)/.exec(f);
+    var hm = /hue-rotate\(([\d.]+)deg\)/.exec(f);
+    var em = /sepia\(([\d.]+)\)/.exec(f);
+    return {
+      B:  bm ? parseFloat(bm[1]) : NaN,
+      S:  sm ? parseFloat(sm[1]) : NaN,
+      C:  cm ? parseFloat(cm[1]) : NaN,
+      H:  hm ? parseFloat(hm[1]) : NaN,
+      Se: em ? parseFloat(em[1]) : NaN
+    };
+  }
+
+  function applyMood(m) {
+    if (!m || typeof m.filter !== 'string') return;
+    var f = m.filter.trim();
+    if (!MOOD_RE.test(f)) return;
+    var bg = document.getElementById('bg');
+    if (!bg) return;
+    if (!_moodApplied) {
+      _moodApplied = true;
+      bg.style.transition = 'none';
+      bg.style.filter = f;
+      if (!window.__moodHookMode) {
+        setTimeout(function () { bg.style.transition = ''; }, 50);
+      }
+    } else {
+      bg.style.filter = f;
+    }
+    window.__moodApplied = parseMoodNums(f);
+  }
+
+  window.__setWallpaperMood = applyMood;
+  applyMood(window.__wallpaperMood);
+})();
+
 window.__setWallpaperVideo = function(src) {
   var v = document.getElementById("bg");
   if (!v) return;

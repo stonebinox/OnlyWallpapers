@@ -50,6 +50,10 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
     <true/>
     <key>LSUIElement</key>
     <true/>
+    <key>NSLocationUsageDescription</key>
+    <string>OnlyWallpapers uses your approximate location to determine local sunrise and sunset times and fetch current weather conditions for adaptive wallpaper tinting. Coordinates are rounded to 2 decimal places before any network request.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>OnlyWallpapers uses your approximate location to determine local sunrise and sunset times and fetch current weather conditions for adaptive wallpaper tinting. Coordinates are rounded to 2 decimal places before any network request.</string>
 </dict>
 </plist>
 PLIST

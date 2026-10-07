@@ -126,14 +126,16 @@ OnlyWallpapers/
 │   ├── main.swift  AppDelegate.swift
 │   ├── WallpaperController.swift     # NSScreen union -> per-screen slice geometry
 │   ├── WebDirectoryResolver.swift    # WALLPAPER_WEB_DIR / app-storage / Bundle.module (ow-94b.3, ow-aqx.2)
-│   ├── AppStorageManager.swift       # seed writable web dir in ~/Library App Support (ow-aqx.2)
-│   ├── StatusItemController.swift    # menu-bar icon + Quit + Choose video (ow-aad.5, ow-aqx.2)
+│   ├── AppStorageManager.swift       # seed web dir + merge-based config.json: framing + weather cache + lat/lon (ow-aqx.2, ow-aqx.15)
+│   ├── StatusItemController.swift    # menu-bar icon + Quit + Choose video + location opt-in (ow-aad.5, ow-aqx.2, ow-aqx.15)
+│   ├── MoodController.swift          # time-of-day + live-weather mood brain: CoreLocation + Open-Meteo + openMeteoURL (ow-aqx.15)
+│   ├── MoodMapper.swift              # pure moodParams + cssFilter + weather hysteresis (ow-aqx.15)
 │   ├── WallpaperWindow.swift         # borderless desktop-layer, click-through window
-│   ├── WebWallpaperView.swift        # WKWebView (opaque base + black fallback, local file access)
+│   ├── WebWallpaperView.swift        # WKWebView (opaque base + black fallback, local file access); applies framing + mood
 │   └── web/                          # render layer; hot-editable via WALLPAPER_WEB_DIR
 │       ├── index.html  style.css  wallpaper.js
 │       └── assets/                   # bg.mp4 etc (gitignored)
-├── scripts/                          # smoke-run, webdir-check, package-app/check, rebuild-check, video-check, framing-check
+├── scripts/                          # smoke-run, webdir-check, package-app/check, rebuild-check, video-check, framing-check, mood-check
 └── ow-local/                         # knowledge repo (folder, same git history)
 ```
 

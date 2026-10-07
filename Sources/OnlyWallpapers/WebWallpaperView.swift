@@ -19,8 +19,9 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
     private var latestGen: Int = 0
     private var isLoaded: Bool = false
     private var latestFraming: AppStorageManager.FramingConfig?
+    private var latestMood: MoodParams?
 
-    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig) {
+    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig, initialMood: MoodParams) {
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
         self.screenName = screenName
@@ -76,6 +77,19 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             )
             config.userContentController.addUserScript(fscript)
         }
+
+        // Mood injection: document-start, newcomers never paint bare identity filter.
+        let moodHook = ProcessInfo.processInfo.environment["OW_MOOD_TEST"] == "1"
+        let moodFilter = cssFilter(initialMood)
+        var moodJS = moodHook ? "window.__moodHookMode=true;" : ""
+        let escaped = moodFilter.replacingOccurrences(of: "\"", with: "\\\"")
+        moodJS += "window.__wallpaperMood={filter:\"\(escaped)\"};";
+        let moodScript = WKUserScript(
+            source: moodJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(moodScript)
 
         super.init(frame: frame, configuration: config)
         // On macOS 26, the public transparency path (underPageBackgroundColor + transparent CSS)
@@ -228,6 +242,64 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         }
     }
 
+    func applyMood(_ params: MoodParams) {
+        latestMood = params
+        guard isLoaded else { return }
+        applyMoodNow(params)
+    }
+
+    private func applyMoodNow(_ params: MoodParams) {
+        let filter = cssFilter(params)
+        let win = self.window?.windowNumber ?? 0
+        let escaped = filter.replacingOccurrences(of: "\"", with: "\\\"")
+        let js = "window.__setWallpaperMood({filter:\"\(escaped)\",win:\(win)})"
+        // FIX 4a: check JS error before logging success; log readback-nil if readback fails.
+        self.evaluateJavaScript(js) { [weak self, filter, win] _, error in
+            guard let self else { return }
+            let wn = self.window?.windowNumber ?? win
+            if let _ = error {
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_MOOD win=\(wn) apply=fail reason=js-error\n".utf8))
+                return
+            }
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_MOOD win=\(wn) filter=\(filter)\n".utf8))
+            let readbackJS = "(function(){var m=window.__moodApplied;var bg=document.getElementById('bg');if(!m||!bg)return JSON.stringify(null);return JSON.stringify({B:m.B,S:m.S,C:m.C,H:m.H,Se:m.Se,f:bg.style.filter});})()"
+            self.evaluateJavaScript(readbackJS) { [weak self] result, _ in
+                guard let self else { return }
+                let wn2 = self.window?.windowNumber ?? wn
+                guard let str = result as? String, str != "null",
+                      let data = str.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let b  = (obj["B"]  as? NSNumber)?.doubleValue,
+                      let s  = (obj["S"]  as? NSNumber)?.doubleValue,
+                      let c  = (obj["C"]  as? NSNumber)?.doubleValue,
+                      let h  = (obj["H"]  as? NSNumber)?.doubleValue,
+                      let se = (obj["Se"] as? NSNumber)?.doubleValue else {
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_MOOD win=\(wn2) apply=fail reason=readback-nil\n".utf8))
+                    return
+                }
+                let inlineFilter = (obj["f"] as? String) ?? ""
+                let line = String(format: "ONLYWALLPAPERS_MOOD_APPLIED win=%ld B=%.4f S=%.4f C=%.4f H=%.4f Se=%.4f inline=%@\n",
+                                  wn2, b, s, c, h, se, inlineFilter)
+                FileHandle.standardOutput.write(Data(line.utf8))
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self else { return }
+                let wn3 = self.window?.windowNumber ?? 0
+                let transJS = "(function(){var bg=document.getElementById('bg');if(!bg)return JSON.stringify(null);var cs=window.getComputedStyle(bg);return JSON.stringify({tp:cs.transitionProperty,td:cs.transitionDuration});})()"
+                self.evaluateJavaScript(transJS) { [weak self] result, _ in
+                    guard let self else { return }
+                    let wn4 = self.window?.windowNumber ?? wn3
+                    guard let str = result as? String, str != "null",
+                          let data2 = str.data(using: .utf8),
+                          let obj2 = try? JSONSerialization.jsonObject(with: data2) as? [String: Any],
+                          let tp = obj2["tp"] as? String,
+                          let td = obj2["td"] as? String else { return }
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_MOOD_TRANSITION win=\(wn4) transitionProperty=\(tp) transitionDuration=\(td)\n".utf8))
+                }
+            }
+        }
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         isLoaded = true
         let win = self.window?.windowNumber ?? 0
@@ -278,6 +350,11 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             applyFramingNow(f)
         } else {
             emitFramingReadback(maxAttempts: 3, delay: 0.25)
+        }
+
+        // Re-apply pending mood (mirrors framing FIX-2 pattern).
+        if let m = latestMood {
+            applyMoodNow(m)
         }
 
         for delay in [1.0, 2.5, 7.5] {

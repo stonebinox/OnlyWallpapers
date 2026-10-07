@@ -19,7 +19,7 @@ rendering.
   ```
 - Production runs with the variable unset. On launch the app seeds a writable copy of the web layer into `~/Library/Application Support/OnlyWallpapers/web/` from the bundle (code files re-seeded when the bundle changes; your chosen video preserved), and loads from there. If app storage is unwritable it falls back to the bundled copy.
 - Set your video from the menu-bar icon ("Choose video...", see below). For dev, drop a clip at `Sources/OnlyWallpapers/web/assets/bg.mp4` and use `WALLPAPER_WEB_DIR`.
-- Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/package-check.sh` (standalone .app), `scripts/rebuild-check.sh` (display hot-plug rebuild), `scripts/video-check.sh` (video asset check), `scripts/framing-check.sh` (zoom/pan framing inject, nudge, clamp, zoom-liveness, hot-plug).
+- Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/package-check.sh` (standalone .app), `scripts/rebuild-check.sh` (display hot-plug rebuild), `scripts/video-check.sh` (video asset check), `scripts/framing-check.sh` (zoom/pan framing inject, nudge, clamp, zoom-liveness, hot-plug), `scripts/mood-check.sh` (adaptive mood: hook inject, broadcast, weather-fixture, applied-filter readback, no network/location).
 
 ## Build and install the app
 
@@ -50,6 +50,34 @@ is overwritten on each new pick) and plays it immediately. The choice persists a
 launches and reboots, and you can delete the original file afterward.
 
 Note: universal binary (Apple Silicon arm64 + Intel x86_64); requires macOS 14 (Sonoma) or newer; unsigned, for local personal use. On Intel Macs, video decode runs hotter, especially at 4K across multiple displays.
+
+## Adaptive mood (time of day + weather)
+
+The wallpaper can gently tint itself to match the local time of day and the live
+weather (a subtle CSS filter: cooler and dimmer at night, warmer at dawn and
+dusk, muted and dim on cloudy or stormy days). The tint is the same on every
+screen and eases smoothly when it changes.
+
+By default the app is fully local and does time-of-day tinting only. Weather is
+opt-in: the app only asks for your location (and only then touches the network)
+after you click the menu-bar icon and choose "Use location for weather tint," OR
+if you hand-set `lat`/`lon` in `config.json` (see below). With neither, it never
+leaves your machine.
+
+Privacy and network, in plain terms:
+- Location is used only after you opt in, at roughly kilometer accuracy, and the
+  coordinates are rounded before any request. It is never inferred from your IP.
+- With location granted (or a manual `lat`/`lon` in
+  `~/Library/Application Support/OnlyWallpapers/config.json`), the app fetches the
+  local forecast over HTTPS from `api.open-meteo.com` (free, no account, no API
+  key) roughly every 15 to 20 minutes, caching the last result for cold start and
+  offline. No other data leaves your machine.
+- Deny the prompt or go offline and it falls back cleanly to time-of-day
+  tinting only. It never crashes and never blocks the wallpaper.
+- A plain `swift run` (no packaged Info.plist) cannot prompt for location, so it
+  is time-of-day only by default. If you still want weather there, hand-edit
+  `lat`/`lon` into `config.json` and it will fetch the forecast for those
+  coordinates.
 
 ## For AI Agents
 Read, in order:

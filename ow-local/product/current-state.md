@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-10-06
+Last updated: 2026-10-07
 
 ## Status: desktop-layer + WKWebView video both de-risked on Tahoe (ow-mbw.2, ow-mbw.1, ow-94b.5 done)
 
@@ -149,16 +149,47 @@ Last updated: 2026-10-06
   through writeFraming, config.json created when app storage is absent, per-window clamp,
   a RUNTIME resize to z=2 keeping media=playing (the hardware-layer risk cleared), and a
   hot-plug newcomer carrying the current framing. The on-screen look (Move Left/Right when
-  zoomed, bezel continuity) is a manual Phase 5 check.
+  zoomed, bezel continuity) is a manual Phase 5 check. (ow-aqx.6 confirmed working on
+  real hardware by the user: reframe works.)
+
+- ow-aqx.15 (adaptive mood, code-complete; Phase 5 pending): the wallpaper tints itself
+  to local time of day + live weather via a CSS filter on `#bg`, identical on every
+  screen. Native `MoodController` + pure `MoodMapper` own the inputs: location is OPT-IN
+  (a menu-bar "Use location for weather tint" click; kilometer accuracy, coords rounded
+  2dp, never IP-geo, no CLLocationManager without the plist key), weather from Open-Meteo
+  (`timeformat=unixtime` so sun times are absolute epochs) with per-attempt backoff and a
+  config.json cache. The pure mapper maps (nowEpoch, sunriseEpoch, sunsetEpoch, weather?)
+  to a clamped 5-function filter tuple: time curve (synthesized 06:00/18:00 when no
+  weather, so the DEFAULT is a time-of-day curve, not neutral), weather as additive
+  offsets (cloud_cover + precip + WMO group with fetch-level hysteresis), hue-rotate
+  pinned 0, subtle clamps, contrast >= 1.01 live-floor. config.json is now MERGE-based so
+  framing and weather/location keys coexist. Fallback: CoreLocation -> config lat/lon ->
+  time-only; never crashes. Packaged Info.plist gains both location usage keys. Reviewed
+  blind by Codex over five cold rounds (startup-ordering, neutral-default, refresh
+  cadence, hysteresis-timing, backoff, and test-adequacy findings all resolved). Gates:
+  `OW_SELFTEST` (190+ cases: pure mapper exact tuples per weather group, sun curve,
+  clamps, polar, shouldFetch backoff, Open-Meteo URL + parse, config-merge round-trip,
+  lat/lon range) and `scripts/mood-check.sh` (hook, broadcast, weather-fixture, and a
+  production-fetch path via a fake-response seam, each asserting the inline
+  `bg.style.filter` DOM read-back is the expected tuple and identical across all windows,
+  with zero real network). The CSS `filter` is validated-safe STATIC (ow-94b.5); the
+  ANIMATED 2s transition across N layers is the Phase 5 real-hardware watch. Follow-ups:
+  ow-aqx.15.1 (6h periodic location re-request), .15.2 (disable the menu item in
+  hook/no-plist), .15.3 (done: launch-gate env hygiene). Weather EFFECTS (lightning
+  flash ow-wgt, wind-driven flying assets ow-l9w) build on this + the overlay canvas
+  ow-aqx.3.
 
 ### Next Step
-Phase 5 for ow-aqx.6: try the Framing submenu on the running app (Move Up/Down, Zoom In,
-and Move Left/Right while zoomed). ow-aad.3 (launch at login) makes the packaged `.app`
-auto-start (reboot test deferred by the user). ow-blz.4 (geometry unit tests, now partly
+Phase 5 for ow-aqx.15: on the packaged app, opt into location, confirm the stormy-day
+muted/cool/dim mood + a day/night tint shift, and WATCH a live 2s filter transition on
+two displays (confirm the hardware video does not blank/hitch). Then ow-aad.3 (launch at
+login) makes the packaged `.app` auto-start (reboot test deferred by the user). ow-blz.4
+(geometry unit tests, now partly
 covered by the ow-blz.3 OW_SELFTEST cases); ow-94b.4 (a real sample video); ow-aqx.7 (the
-fuller menu-bar controls surface); ow-aqx.5 (bounce); ow-aqx.1 (moods). ow-mbw.4 adds the
-fuller window-config run check; ow-blz.5 handles slice sync. Retiring the env-gated
-webspike A/B is a deferred cleanup.
+fuller menu-bar controls surface); ow-aqx.5 (bounce); ow-aqx.3 (overlay canvas, which
+unblocks the weather effects ow-wgt/ow-l9w). ow-mbw.4 adds the fuller window-config run
+check; ow-blz.5 handles slice sync. Retiring the env-gated webspike A/B is a deferred
+cleanup. (ow-aqx.1 time-of-day mood folded into ow-aqx.15, done.)
 
 ### Decisions So Far
 - DEC-001: HTML-wrapped video over raw AVPlayer or Metal.

@@ -70,6 +70,21 @@ else
     fail "CFBundleExecutable wrong (got: '$CFBundleExecutable')"
 fi
 
+# FIX 7: assert both location plist keys are present.
+NSLocUsage="$(defaults read "$APP/Contents/Info" NSLocationUsageDescription 2>/dev/null || true)"
+if [[ -n "$NSLocUsage" ]]; then
+    pass "NSLocationUsageDescription present: ${NSLocUsage:0:60}..."
+else
+    fail "NSLocationUsageDescription missing or empty in Info.plist"
+fi
+
+NSLocWhenInUse="$(defaults read "$APP/Contents/Info" NSLocationWhenInUseUsageDescription 2>/dev/null || true)"
+if [[ -n "$NSLocWhenInUse" ]]; then
+    pass "NSLocationWhenInUseUsageDescription present: ${NSLocWhenInUse:0:60}..."
+else
+    fail "NSLocationWhenInUseUsageDescription missing or empty in Info.plist"
+fi
+
 # --- Step 3: standalone run from a temp dir ---
 echo "[standalone] Copying .app to temp dir outside repo..."
 TMP_DIR=""
@@ -109,9 +124,9 @@ TMPOUT="$TMP_DIR/stdout.txt"
 cd "$TMP_DIR"
 PKG_OW_SUPPORT_TMP="$(mktemp -d)"
 if command -v setsid >/dev/null 2>&1; then
-    OW_APP_SUPPORT_DIR="$PKG_OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST setsid "$TMP_BIN" >"$TMPOUT" 2>&1 &
+    OW_APP_SUPPORT_DIR="$PKG_OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON setsid "$TMP_BIN" >"$TMPOUT" 2>&1 &
 else
-    OW_APP_SUPPORT_DIR="$PKG_OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST "$TMP_BIN" >"$TMPOUT" 2>&1 &
+    OW_APP_SUPPORT_DIR="$PKG_OW_SUPPORT_TMP" env -u WALLPAPER_WEB_DIR -u OW_SPIKE -u OW_WEBSPIKE -u OW_FAKE_SCREENS_FILE -u OW_SELFTEST -u OW_REBUILD_TEST -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON "$TMP_BIN" >"$TMPOUT" 2>&1 &
 fi
 APP_PID=$!
 echo "[standalone] PID=$APP_PID"

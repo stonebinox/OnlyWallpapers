@@ -48,14 +48,36 @@ slice geometry. The per-screen slice geometry is now injected into the web layer
   `NSStatusItem` (template SF Symbol). Menu: a "Choose video..." item (ow-aqx.2, enabled
   only when the resolved source is `appstore` and the assets dir is writable), a
   "Framing" submenu (ow-aqx.6: Move Up/Down/Left/Right, Zoom In/Out, Reset, wired to the
-  controller framing nudges), and "Quit OnlyWallpapers" (`NSApp.terminate`). Created only
+  controller framing nudges), a "Use location for weather tint" item (ow-aqx.15, the
+  opt-in that triggers the one location prompt), and "Quit OnlyWallpapers"
+  (`NSApp.terminate`). Created only
   in the default production path, retained by `AppDelegate` (which passes the controller
   coordinator). Logs `ONLYWALLPAPERS_STATUSITEM created=<bool>`. It is the only way to
   quit the installed accessory app without Activity Monitor.
-- **AppStorageManager** (ow-aqx.2 + ow-aqx.6, done): owns app-storage. Seeds the writable
-  web dir (see Web Asset Resolution) and owns the framing `config.json` (sibling of
-  `web/`): per-field clamped read, atomic rounded write, creates `appSupportRoot` if
-  absent. `currentFraming` is the in-memory source of truth injected into each view.
+- **AppStorageManager** (ow-aqx.2 + ow-aqx.6 + ow-aqx.15, done): owns app-storage. Seeds
+  the writable web dir (see Web Asset Resolution) and owns `config.json` (sibling of
+  `web/`). Config I/O is now MERGE-based (ow-aqx.15): a `writeFraming` preserves the
+  weather cache and manual `lat`/`lon`, and a weather/location write preserves the
+  framing keys (reading the whole dict, mutating keys, atomic rounded write). Holds the
+  framing config (per-field clamped), the `weatherCache` object, and a manual `lat`/`lon`
+  fallback (range-checked to [-90,90]/[-180,180]). `currentFraming` is the in-memory
+  framing source of truth injected into each view.
+- **MoodController** (ow-aqx.15, done): the mood brain. @MainActor, three modes: `normal`
+  (packaged, has the Info.plist location key), `noPlist` (bare `swift run`), `hook`
+  (`OW_MOOD_TEST`). Location is OPT-IN only (a status-menu click calls
+  `requestWhenInUseAuthorization` like the video picker); kilometer accuracy, coords
+  rounded to 2dp, never IP-geo, never constructs `CLLocationManager` without the plist
+  key. Fetches Open-Meteo (`timeformat=unixtime`, so sunrise/sunset/now are absolute
+  epochs) with per-attempt backoff (a pure `shouldFetch` helper: >= 900s spacing unless
+  the location moved), caches the result, and recomputes the mood on a 5-min timer + on
+  wake. The pure mapper (`MoodMapper.swift`: `moodParams(nowEpoch, sunriseEpoch,
+  sunsetEpoch, weather?) -> (B,S,C,H,Se)` + `cssFilter`) is the testable core: time curve
+  from the sun epochs (synthesized 06:00/18:00 when no weather, so the DEFAULT is still a
+  time-of-day curve, not neutral), weather as additive offsets (cloud_cover + precip +
+  WMO group with fetch-level hysteresis), subtle clamps, hue-rotate pinned 0. It hands
+  the tuple to `WallpaperController.applyMoodToAll`; it never reaches into the views. On
+  any failure it degrades to time-only. Fallback order: CoreLocation -> config `lat`/`lon`
+  -> time-only.
 
 ## The Desktop-Layer Trick
 A normal window becomes a wallpaper with these settings:
@@ -112,7 +134,10 @@ tiered resolution above applies only to the default, non-webspike path.
 ## Packaging (ow-aad.5, done)
 `scripts/package-app.sh` produces a standalone, local, UNSIGNED `dist/OnlyWallpapers.app`:
 `swift build -c release`, then the binary into `Contents/MacOS/` and an `Info.plist`
-(CFBundle* + `LSMinimumSystemVersion 14.0` + `LSUIElement true`) into `Contents/`.
+(CFBundle* + `LSMinimumSystemVersion 14.0` + `LSUIElement true` + both
+`NSLocationUsageDescription` and `NSLocationWhenInUseUsageDescription` for the opt-in
+weather tint, ow-aqx.15; `package-check.sh` asserts both keys are present and non-empty)
+into `Contents/`.
 CRUX: the SwiftPM resource bundle goes at the `.app` ROOT
 (`OnlyWallpapers.app/OnlyWallpapers_OnlyWallpapers.bundle`), NOT `Contents/Resources`
 and NOT `Contents/MacOS`, because the synthesized `Bundle.module` accessor resolves

@@ -38,6 +38,7 @@ nonisolated func computeLayout(_ frames: [CGRect]) -> (union: CGRect, slices: [W
 
 final class WallpaperController {
 
+    private(set) var currentMood: MoodParams = .neutral
     private var records: [WallpaperScreenRecord] = []
     private var committedDescriptors: [ScreenDescriptor] = []
     private var reducer = WallpaperRefreshReducer()
@@ -269,7 +270,8 @@ final class WallpaperController {
                         screenName: "Display-\(desc.displayID)",
                         geometry: geo,
                         commitGen: gen,
-                        initialFraming: AppStorageManager.currentFraming)
+                        initialFraming: AppStorageManager.currentFraming,
+                        initialMood: currentMood)
                     let win = WallpaperWindow(frame: desc.frame, contentView: webView)
                     win.orderFrontRegardless()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
@@ -368,6 +370,13 @@ final class WallpaperController {
         let cfg = AppStorageManager.currentFraming
         for rec in records {
             rec.webView?.applyFraming(cfg)
+        }
+    }
+
+    func applyMoodToAll(_ params: MoodParams) {
+        currentMood = params
+        for rec in records {
+            rec.webView?.applyMood(params)
         }
     }
 

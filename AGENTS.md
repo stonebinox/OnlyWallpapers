@@ -64,9 +64,13 @@ that and form your own view from the code. Your value is the unbiased second rea
 - `WallpaperWindow.swift`: borderless window at `CGWindowLevelForKey(.desktopWindow)`,
   `canJoinAllSpaces`/`stationary`, `ignoresMouseEvents`, clear background.
 - `WebWallpaperView.swift`: `WKWebView` with transparent drawing and local file
-  read access; slice geometry injected at document start.
-- `web/`: `index.html` (video + overlay canvas), `style.css` (filters), `wallpaper.js`
-  (sizes the stage to the union, translates to this screen's slice, autoplay kick).
+  read access; slice geometry, framing, and mood injected at document start.
+- `MoodController.swift` + `MoodMapper.swift`: time-of-day + live-weather mood
+  (opt-in CoreLocation, Open-Meteo, a pure mapper to a CSS filter); hands the tuple to
+  `WallpaperController.applyMoodToAll`. `AppStorageManager` config.json is merge-based.
+- `web/`: `index.html` (video + overlay canvas), `style.css` (filters + mood transition),
+  `wallpaper.js` (sizes the stage to the union, translates to this screen's slice,
+  autoplay kick, framing + mood setters).
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
 ## Beads Issue Tracker

@@ -32,7 +32,12 @@ SKIP=0
 
 launch_real() {
     local support_dir="$1"
-    OW_APP_SUPPORT_DIR="$support_dir" OW_FRAMING_TEST=1 "$BINARY" > "$TMPOUT" 2>&1 &
+    local extra_env="${2:-}"
+    if [[ -n "$extra_env" ]]; then
+        env -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON $extra_env OW_APP_SUPPORT_DIR="$support_dir" OW_FRAMING_TEST=1 "$BINARY" > "$TMPOUT" 2>&1 &
+    else
+        env -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON OW_APP_SUPPORT_DIR="$support_dir" OW_FRAMING_TEST=1 "$BINARY" > "$TMPOUT" 2>&1 &
+    fi
     PID=$!
 }
 
@@ -333,7 +338,7 @@ OW_SUPPORT_TMP="$(mktemp -d)"
 ABSENT_DIR="$OW_SUPPORT_TMP/sub/does-not-exist"
 # ABSENT_DIR does not exist yet; OW_SUPPORT_TMP is the parent and gets cleaned up on exit.
 TMPOUT="$(mktemp)"
-OW_APP_SUPPORT_DIR="$ABSENT_DIR" OW_FRAMING_TEST=1 "$BINARY" > "$TMPOUT" 2>&1 &
+env -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON OW_APP_SUPPORT_DIR="$ABSENT_DIR" OW_FRAMING_TEST=1 "$BINARY" > "$TMPOUT" 2>&1 &
 PID=$!
 sleep 4
 
@@ -452,7 +457,7 @@ OW_SUPPORT_TMP="$(mktemp -d)"
 TMPOUT="$(mktemp)"
 mp4_path="$REPO_ROOT/Sources/OnlyWallpapers/web/assets/bg.mp4"
 if [[ -f "$mp4_path" ]]; then
-    OW_APP_SUPPORT_DIR="$OW_SUPPORT_TMP" OW_FRAMING_TEST=1 WALLPAPER_WEB_DIR="$REPO_ROOT/Sources/OnlyWallpapers/web" "$BINARY" > "$TMPOUT" 2>&1 &
+    env -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON OW_APP_SUPPORT_DIR="$OW_SUPPORT_TMP" OW_FRAMING_TEST=1 WALLPAPER_WEB_DIR="$REPO_ROOT/Sources/OnlyWallpapers/web" "$BINARY" > "$TMPOUT" 2>&1 &
 else
     launch_real "$OW_SUPPORT_TMP"
 fi
@@ -586,7 +591,7 @@ SCREENS
     echo '{"zoom":1.5,"panX":0.0,"panY":1.0}' > "$OW_SUPPORT_TMP/config.json"
     TMPOUT="$(mktemp)"
 
-    OW_APP_SUPPORT_DIR="$OW_SUPPORT_TMP" OW_FAKE_SCREENS_FILE="$FAKE_SCREENS" OW_FRAMING_TEST=1 WALLPAPER_WEB_DIR="$REPO_ROOT/Sources/OnlyWallpapers/web" "$BINARY" > "$TMPOUT" 2>&1 &
+    env -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON OW_APP_SUPPORT_DIR="$OW_SUPPORT_TMP" OW_FAKE_SCREENS_FILE="$FAKE_SCREENS" OW_FRAMING_TEST=1 WALLPAPER_WEB_DIR="$REPO_ROOT/Sources/OnlyWallpapers/web" "$BINARY" > "$TMPOUT" 2>&1 &
     PID=$!
     sleep 6
 

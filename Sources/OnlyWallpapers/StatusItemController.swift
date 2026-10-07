@@ -6,6 +6,7 @@ final class StatusItemController {
     private var copyInFlight: Bool = false
     private var chooseVideoItem: NSMenuItem?
     var onChooseVideo: (@MainActor () -> Void)?
+    var onRequestLocation: (@MainActor () -> Void)?
     private weak var wallpaperController: WallpaperController?
 
     // pickerEnabled requires source=appstore AND assets dir writable; source alone is not enough.
@@ -68,6 +69,10 @@ final class StatusItemController {
 
         menu.addItem(framingSubmenuItem)
 
+        let locationItem = NSMenuItem(title: "Use location for weather tint", action: #selector(locationTintAction), keyEquivalent: "")
+        locationItem.target = self
+        menu.addItem(locationItem)
+
         let quitItem = NSMenuItem(title: "Quit OnlyWallpapers", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quitItem.target = nil
         menu.addItem(quitItem)
@@ -82,6 +87,11 @@ final class StatusItemController {
     @objc private func framingZoomIn() { wallpaperController?.zoomBy(0.1) }
     @objc private func framingZoomOut() { wallpaperController?.zoomBy(-0.1) }
     @objc private func framingReset() { wallpaperController?.resetFraming() }
+
+    @objc private func locationTintAction() {
+        NSApp.activate()
+        onRequestLocation?()
+    }
 
     @objc private func chooseVideoAction() {
         guard !copyInFlight, chooseVideoItem?.isEnabled == true else { return }

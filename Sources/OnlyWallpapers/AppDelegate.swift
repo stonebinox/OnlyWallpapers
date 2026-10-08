@@ -132,6 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mood.onStormUpdate = { [weak controller] active in
                 controller?.applyStormToAll(active)
             }
+            mood.onRainUpdate = { [weak controller] state in
+                controller?.applyRainToAll(state)
+            }
             // FIX 1: wire onMoodUpdate before calling start() so the first broadcast is not lost.
             moodController = mood
 

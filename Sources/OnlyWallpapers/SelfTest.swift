@@ -385,7 +385,8 @@ enum SelfTest {
         // writeWeatherCache must write cache AND preserve zoom/panX/panY
         let wcEntry = WeatherCacheEntry(fetchedAt: 1728388800, lat: 37.77, lon: -122.42,
                                          sunriseEpoch: 1728367200, sunsetEpoch: 1728410400,
-                                         weatherCode: 61, cloudCover: 50.0, precipitation: 2.0)
+                                         weatherCode: 61, cloudCover: 50.0, precipitation: 2.0,
+                                         windSpeed: 0.0, windDirection: 0.0)
         let wcOk = AppStorageManager.writeWeatherCache(wcEntry)
         check("config-merge-writeWeatherCache-returns-ok", wcOk)
         let afterWC = (try? JSONSerialization.jsonObject(with: Data(contentsOf: cfgURL))) as? [String: Any] ?? [:]
@@ -425,6 +426,8 @@ enum SelfTest {
         check("openMeteoURL-current-has-cloud_cover", currentFields.contains("cloud_cover"))
         check("openMeteoURL-current-has-precipitation", currentFields.contains("precipitation"))
         check("openMeteoURL-current-has-is_day", currentFields.contains("is_day"))
+        check("openMeteoURL-current-has-wind_speed_10m", currentFields.contains("wind_speed_10m"))
+        check("openMeteoURL-current-has-wind_direction_10m", currentFields.contains("wind_direction_10m"))
         check("openMeteoURL-daily-fields", query.contains("daily=sunrise,sunset") || (query.contains("daily=") && query.contains("sunrise") && query.contains("sunset")))
 
         // MARK: - Weather cache round-trip selftest
@@ -437,7 +440,8 @@ enum SelfTest {
             fetchedAt: 1728388800.0,
             lat: 37.77, lon: -122.42,
             sunriseEpoch: 1728367200.0, sunsetEpoch: 1728410400.0,
-            weatherCode: 61, cloudCover: 75.0, precipitation: 2.5
+            weatherCode: 61, cloudCover: 75.0, precipitation: 2.5,
+            windSpeed: 18.0, windDirection: 135.0
         )
         let rtWriteOk = AppStorageManager.writeWeatherCache(rtEntry)
         check("cache-rt-write-ok", rtWriteOk)
@@ -453,6 +457,8 @@ enum SelfTest {
             check("cache-rt-weatherCode",  rt.weatherCode == rtEntry.weatherCode)
             check("cache-rt-cloudCover",   abs(rt.cloudCover   - rtEntry.cloudCover)   < 0.01)
             check("cache-rt-precipitation",abs(rt.precipitation - rtEntry.precipitation) < 0.001)
+            check("cache-rt-windSpeed",    abs(rt.windSpeed    - rtEntry.windSpeed)    < 0.01)
+            check("cache-rt-windDirection",abs(rt.windDirection - rtEntry.windDirection) < 0.01)
         }
         // Verify pre-seeded zoom key survived (merge must not clobber other keys)
         let rtAfterDict = (try? JSONSerialization.jsonObject(with: Data(contentsOf: cfgURL))) as? [String: Any] ?? [:]
@@ -563,6 +569,8 @@ enum SelfTest {
             check("parseOpenMeteo-real-sunriseEpoch",  abs(e.sunriseEpoch - 1791333521) < 0.01)
             check("parseOpenMeteo-real-sunsetEpoch",   abs(e.sunsetEpoch  - 1791376507) < 0.01)
             check("parseOpenMeteo-real-fetchedAt-positive", e.fetchedAt > 0)
+            check("parseOpenMeteo-real-wind-speed-defaults-zero", abs(e.windSpeed - 0.0) < 0.001)
+            check("parseOpenMeteo-real-wind-dir-defaults-zero", abs(e.windDirection - 0.0) < 0.001)
         }
         // current.time from the real fixture is readable as the now-epoch source (used by hook mode).
         let realFixtureObj = try? JSONSerialization.jsonObject(with: realFixtureData) as? [String: Any]
@@ -660,14 +668,91 @@ enum SelfTest {
         // valid storm weather (code 95-99) => stormActive true
         let validWeatherForStorm = WeatherCacheEntry(
             fetchedAt: Date().timeIntervalSince1970, lat: 0, lon: 0,
-            sunriseEpoch: 0, sunsetEpoch: 86400, weatherCode: 95, cloudCover: 100, precipitation: 5)
+            sunriseEpoch: 0, sunsetEpoch: 86400, weatherCode: 95, cloudCover: 100, precipitation: 5,
+            windSpeed: 0.0, windDirection: 0.0)
         check("stormActive-valid-storm-true", MoodController.stormActive(resolvedWeather: validWeatherForStorm, effectiveCode: 95))
 
         // valid clear weather => stormActive false
         let validWeatherClear = WeatherCacheEntry(
             fetchedAt: Date().timeIntervalSince1970, lat: 0, lon: 0,
-            sunriseEpoch: 0, sunsetEpoch: 86400, weatherCode: 0, cloudCover: 0, precipitation: 0)
+            sunriseEpoch: 0, sunsetEpoch: 86400, weatherCode: 0, cloudCover: 0, precipitation: 0,
+            windSpeed: 0.0, windDirection: 0.0)
         check("stormActive-valid-clear-false", !MoodController.stormActive(resolvedWeather: validWeatherClear, effectiveCode: 0))
+
+        // MARK: - Rain selftests (ow-l9w)
+
+        // rainActive: nil weather => false
+        check("rainActive-nil-weather-false", !MoodController.rainActive(resolvedWeather: nil, effectiveCode: nil))
+        check("rainActive-nil-weather-code95-false", !MoodController.rainActive(resolvedWeather: nil, effectiveCode: 95))
+
+        // rainActive: valid rain weather
+        let rainWeatherCache = WeatherCacheEntry(
+            fetchedAt: Date().timeIntervalSince1970, lat: 0, lon: 0,
+            sunriseEpoch: 0, sunsetEpoch: 86400, weatherCode: 61, cloudCover: 75, precipitation: 2.0,
+            windSpeed: 20.0, windDirection: 270.0)
+        check("rainActive-rain-code61-true", MoodController.rainActive(resolvedWeather: rainWeatherCache, effectiveCode: 61))
+        check("rainActive-storm-code95-true", MoodController.rainActive(resolvedWeather: rainWeatherCache, effectiveCode: 95))
+        check("rainActive-clear-code0-false", !MoodController.rainActive(resolvedWeather: rainWeatherCache, effectiveCode: 0))
+        check("rainActive-drizzle-code51-true", MoodController.rainActive(resolvedWeather: rainWeatherCache, effectiveCode: 51))
+        check("rainActive-snow-code71-false", !MoodController.rainActive(resolvedWeather: rainWeatherCache, effectiveCode: 71))
+
+        // rainIntensity: monotonic + clamped
+        check("rainIntensity-zero", abs(MoodController.rainIntensity(precip: 0.0)) < 0.001)
+        check("rainIntensity-light", MoodController.rainIntensity(precip: 0.5) > 0.0)
+        check("rainIntensity-heavy-clamped", abs(MoodController.rainIntensity(precip: 8.0) - 1.0) < 0.001)
+        check("rainIntensity-over-clamped", abs(MoodController.rainIntensity(precip: 100.0) - 1.0) < 0.001)
+        check("rainIntensity-monotonic", MoodController.rainIntensity(precip: 1.0) < MoodController.rainIntensity(precip: 4.0))
+        check("rainIntensity-negative-clamped", abs(MoodController.rainIntensity(precip: -1.0)) < 0.001)
+
+        // windParams: clamped strength, direction pass-through
+        let (ws0, wd0) = MoodController.windParams(speedKmh: 0, dirDeg: 0)
+        check("windParams-zero-speed", abs(ws0) < 0.001)
+        check("windParams-zero-dir", abs(wd0) < 0.001)
+
+        let (ws60, wd270) = MoodController.windParams(speedKmh: 60, dirDeg: 270)
+        check("windParams-60kmh-strength-1", abs(ws60 - 1.0) < 0.001)
+        check("windParams-270-dir", abs(wd270 - 270.0) < 0.001)
+
+        let (ws120, _) = MoodController.windParams(speedKmh: 120, dirDeg: 0)
+        check("windParams-over-60-clamped", abs(ws120 - 1.0) < 0.001)
+
+        // Wind direction horizontal component signs:
+        // West wind (270 deg FROM): rain slants right => positive horizontal
+        // -sin(270 * pi/180) = -sin(-pi/2) = 1 > 0
+        let westHoriz = -sin(270.0 * Double.pi / 180.0)
+        check("windDir-west-positive-horiz", westHoriz > 0)
+
+        // East wind (90 deg FROM): rain slants left => negative horizontal
+        // -sin(90 * pi/180) = -1 < 0
+        let eastHoriz = -sin(90.0 * Double.pi / 180.0)
+        check("windDir-east-negative-horiz", eastHoriz < 0)
+
+        // North wind (0 deg): no horizontal component
+        let northHoriz = -sin(0.0 * Double.pi / 180.0)
+        check("windDir-north-zero-horiz", abs(northHoriz) < 0.001)
+
+        // MARK: - Wind field parse from Open-Meteo response (ow-l9w)
+        let windFixtureJSON = """
+{"latitude":37.77,"longitude":-122.42,"utc_offset_seconds":-25200,"timezone":"America/Los_Angeles","current_units":{"time":"unixtime","interval":"seconds","weather_code":"wmo code","cloud_cover":"%","precipitation":"mm","is_day":"","wind_speed_10m":"km/h","wind_direction_10m":"degrees"},"current":{"time":1728388800,"interval":900,"weather_code":61,"cloud_cover":75,"precipitation":3.5,"is_day":1,"wind_speed_10m":25.0,"wind_direction_10m":270.0},"daily_units":{"time":"unixtime","sunrise":"unixtime","sunset":"unixtime"},"daily":{"time":[1728302400],"sunrise":[1728325200],"sunset":[1728368400]}}
+"""
+        let windFixtureData = windFixtureJSON.data(using: .utf8)!
+        let parsedWindEntry = MoodController.parseOpenMeteoResponse(data: windFixtureData, lat: 37.77, lon: -122.42)
+        check("parseOpenMeteo-wind-non-nil", parsedWindEntry != nil)
+        if let we = parsedWindEntry {
+            check("parseOpenMeteo-wind-speed", abs(we.windSpeed - 25.0) < 0.01)
+            check("parseOpenMeteo-wind-dir", abs(we.windDirection - 270.0) < 0.01)
+            check("parseOpenMeteo-wind-code", we.weatherCode == 61)
+            check("parseOpenMeteo-wind-precip", abs(we.precipitation - 3.5) < 0.01)
+        }
+
+        // Missing wind fields: defaults to 0.0
+        let noWindFixtureJSON = """
+{"latitude":37.77,"longitude":-122.42,"utc_offset_seconds":-25200,"timezone":"America/Los_Angeles","current_units":{},"current":{"time":1728388800,"interval":900,"weather_code":0,"cloud_cover":0,"precipitation":0.0,"is_day":1},"daily":{"time":[1728302400],"sunrise":[1728325200],"sunset":[1728368400]}}
+"""
+        let noWindData = noWindFixtureJSON.data(using: .utf8)!
+        let parsedNoWind = MoodController.parseOpenMeteoResponse(data: noWindData, lat: 37.77, lon: -122.42)
+        check("parseOpenMeteo-no-wind-defaults-zero-speed", parsedNoWind.map { abs($0.windSpeed) < 0.001 } ?? false)
+        check("parseOpenMeteo-no-wind-defaults-zero-dir", parsedNoWind.map { abs($0.windDirection) < 0.001 } ?? false)
 
         // flashAlpha envelope: rises to peak, decays to 0, clamped [0,peak]
         let fa_peak = 0.7

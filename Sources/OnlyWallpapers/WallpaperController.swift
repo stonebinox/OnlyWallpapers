@@ -40,6 +40,7 @@ final class WallpaperController {
 
     private(set) var currentMood: MoodParams = .neutral
     private(set) var currentStorm: Bool = false
+    private(set) var currentRain: RainState = RainState(active: false, intensity: 0, windStrength: 0, windDir: 0)
     private var records: [WallpaperScreenRecord] = []
     private var committedDescriptors: [ScreenDescriptor] = []
     private var reducer = WallpaperRefreshReducer()
@@ -271,7 +272,8 @@ final class WallpaperController {
                         commitGen: gen,
                         initialFraming: AppStorageManager.currentFraming,
                         initialMood: currentMood,
-                        initialStorm: currentStorm)
+                        initialStorm: currentStorm,
+                        initialRain: currentRain)
                     let win = WallpaperWindow(frame: desc.frame, contentView: webView)
                     win.orderFrontRegardless()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
@@ -384,6 +386,13 @@ final class WallpaperController {
         currentStorm = active
         for rec in records {
             rec.webView?.applyStorm(active)
+        }
+    }
+
+    func applyRainToAll(_ state: RainState) {
+        currentRain = state
+        for rec in records {
+            rec.webView?.applyRain(state)
         }
     }
 

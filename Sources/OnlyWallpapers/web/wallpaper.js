@@ -110,12 +110,19 @@
   var ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  var currentEffect = null;
+  var effects = {};
+  var effectOrder = [];
   var rafId = null;
   var lastTs = null;
   var running = false;
 
-  window.__overlayStats = { sized: { w: 0, h: 0, dpr: window.devicePixelRatio || 1 }, running: false, frames: 0, hasEffect: false };
+  window.__overlayStats = { sized: { w: 0, h: 0, dpr: window.devicePixelRatio || 1 }, running: false, frames: 0, hasEffect: false, effects: { count: 0, names: [] }, emptyAlpha: null, markerAlpha: null };
+
+  function updateEffectStats() {
+    var names = effectOrder.slice();
+    window.__overlayStats.hasEffect = names.length > 0;
+    window.__overlayStats.effects = { count: names.length, names: names };
+  }
 
   function backingSize(stageW, stageH, d) {
     if (!isFinite(stageW) || !isFinite(stageH) || !isFinite(d)) return null;
@@ -134,8 +141,9 @@
     canvas.style.width = "100%";
     canvas.style.height = "100%";
     window.__overlayStats.sized = { w: bs.w, h: bs.h, dpr: d };
-    if (currentEffect && typeof currentEffect.resize === "function") {
-      currentEffect.resize(bs.w, bs.h, d);
+    for (var i = 0; i < effectOrder.length; i++) {
+      var e = effects[effectOrder[i]];
+      if (typeof e.resize === "function") { e.resize(bs.w, bs.h, d); }
     }
   }
 
@@ -174,13 +182,13 @@
   function loop(ts) {
     if (!running) return;
     rafId = requestAnimationFrame(loop);
-    if (!currentEffect) return;
     var dt = lastTs === null ? 0 : Math.min(ts - lastTs, 100);
     lastTs = ts;
-    var w = canvas.width;
-    var h = canvas.height;
-    if (!currentEffect.manualClear) { ctx.clearRect(0, 0, w, h); }
-    currentEffect.frame(ctx, w, h, ts, dt);
+    var w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    for (var i = 0; i < effectOrder.length; i++) {
+      effects[effectOrder[i]].frame(ctx, w, h, ts, dt);
+    }
     window.__overlayStats.frames += 1;
   }
 
@@ -200,38 +208,42 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 
-  function register(effectOrFn) {
+  function register(name, effectOrFn) {
     var effect = typeof effectOrFn === "function" ? { frame: effectOrFn } : effectOrFn;
-    if (currentEffect && typeof currentEffect.destroy === "function") { currentEffect.destroy(); }
-    currentEffect = effect;
-    window.__overlayStats.hasEffect = true;
-    window.__overlayStats.frames = 0;
+    if (effects[name]) {
+      if (typeof effects[name].destroy === "function") { effects[name].destroy(); }
+      effects[name] = effect;
+    } else {
+      effectOrder.push(name);
+      effects[name] = effect;
+    }
     var bs = window.__overlayStats.sized;
-    if (typeof effect.init === "function") { effect.init(ctx, bs.w, bs.h, window.__overlayStats.sized.dpr); }
+    if (typeof effect.init === "function") { effect.init(ctx, bs.w, bs.h, bs.dpr); }
+    updateEffectStats();
   }
 
-  function unregister() {
-    stop();
-    if (currentEffect && typeof currentEffect.destroy === "function") { currentEffect.destroy(); }
-    currentEffect = null;
-    window.__overlayStats.hasEffect = false;
+  function unregister(name) {
+    if (!effects[name]) return;
+    if (typeof effects[name].destroy === "function") { effects[name].destroy(); }
+    delete effects[name];
+    var idx = effectOrder.indexOf(name);
+    if (idx >= 0) { effectOrder.splice(idx, 1); }
+    updateEffectStats();
+    if (effectOrder.length === 0) { stop(); }
   }
 
   function setEnabled(bool) {
     if (bool) { start(); } else { stop(); }
   }
 
-  window.__overlay = { register: register, unregister: unregister, clear: unregister, setEnabled: setEnabled, start: start, stop: stop };
+  window.__overlay = { register: register, unregister: unregister, setEnabled: setEnabled, start: start, stop: stop };
 
   // Test mode: register a minimal effect and start the loop.
   if (window.__overlayTest === true) {
-    register({
+    register('__test', {
       frame: function (c, w, h, tMs, dtMs) {
         c.fillStyle = "rgba(255,0,128,0.5)";
         c.fillRect(4, 4, 8, 8);
-        // Sample backing pixels once after first draw to verify transparent compositing.
-        // Empty region (1,1) must be alpha=0 (clearRect kept it transparent).
-        // Marker region (8,8) must be alpha>0 (fillRect drew there).
         if (!window.__overlayStats._pixelSampled) {
           window.__overlayStats._pixelSampled = true;
           try {
@@ -242,21 +254,27 @@
       }
     });
     start();
-    // Fallback for environments where rAF is throttled (accessory-policy apps on macOS suppress
-    // vsync callbacks for WKWebViews). After 400ms, if rAF has not fired even once, drive frames
-    // via setInterval so the gate can verify the drawing mechanism regardless of rAF availability.
+  }
+
+  // rAF fallback for any test mode: if rAF is throttled, drive frames via setInterval.
+  var _isTestMode = window.__overlayTest === true || window.__l9wTest === true || window.__wgtTest === true;
+  if (_isTestMode) {
     var _rafFired = false;
-    requestAnimationFrame(function () { _rafFired = true; });
-    setTimeout(function () {
-      if (_rafFired || !running || !currentEffect) return;
-      var _iv = setInterval(function () {
-        if (!running || window.__overlayStats.frames >= 3) { clearInterval(_iv); return; }
+    requestAnimationFrame(function() { _rafFired = true; });
+    setTimeout(function() {
+      if (_rafFired || !running || effectOrder.length === 0) return;
+      var _iv = setInterval(function() {
+        if (!running || effectOrder.length === 0 || window.__overlayStats.frames >= 3) {
+          clearInterval(_iv); return;
+        }
         var now = performance.now();
-        var dt = lastTs === null ? 0 : Math.min(now - lastTs, 100);
+        var dt2 = lastTs === null ? 0 : Math.min(now - lastTs, 100);
         lastTs = now;
         var cw = canvas.width, ch = canvas.height;
-        if (!currentEffect.manualClear) { ctx.clearRect(0, 0, cw, ch); }
-        currentEffect.frame(ctx, cw, ch, now, dt);
+        ctx.clearRect(0, 0, cw, ch);
+        for (var i2 = 0; i2 < effectOrder.length; i2++) {
+          effects[effectOrder[i2]].frame(ctx, cw, ch, now, dt2);
+        }
         window.__overlayStats.frames += 1;
       }, 200);
     }, 400);
@@ -343,7 +361,6 @@ window.__setWallpaperVideo = function(src) {
   }
 
   function drawFlash(ctx, w, h, a) {
-    ctx.clearRect(0, 0, w, h);
     ctx.globalCompositeOperation = 'lighter';
 
     var primaryRadius = GLOW_RADIUS_FRAC * w;
@@ -425,7 +442,6 @@ window.__setWallpaperVideo = function(src) {
 
     if (_phase === 'decay') {
       if (ts >= _decayEnd) {
-        ctx.clearRect(0, 0, w, h);
         _flickersLeft -= 1;
         if (!window.__wgtStats) window.__wgtStats = { maxRenderedAlpha: 0, maxAlpha: 0, idleAlpha: 0, postFlashIdleAlpha: -1 };
         _wgtStats = window.__wgtStats;
@@ -458,7 +474,6 @@ window.__setWallpaperVideo = function(src) {
   function resize(w, h, dpr) {}
 
   var lightningEffect = {
-    manualClear: true,
     frame: frame,
     init: init,
     resize: resize
@@ -488,20 +503,263 @@ window.__setWallpaperVideo = function(src) {
   function applyStorm(active) {
     var rm = _reducedMotion || (window.__wgtReducedMotion === true);
     if (rm) {
-      if (_stormRegistered) { window.__overlay.unregister(); _stormRegistered = false; }
+      if (_stormRegistered) { window.__overlay.unregister('lightning'); _stormRegistered = false; }
       return;
     }
     var effectiveActive = active || (window.__wgtTest === true);
     if (effectiveActive && !_stormRegistered) {
-      window.__overlay.register(lightningEffect);
+      window.__overlay.register('lightning', lightningEffect);
       window.__overlay.start();
       _stormRegistered = true;
     } else if (!effectiveActive && _stormRegistered) {
-      window.__overlay.unregister();
+      window.__overlay.unregister('lightning');
       _stormRegistered = false;
     }
   }
 
   window.__setWallpaperStorm = applyStorm;
   applyStorm(window.__wallpaperStorm === true);
+})();
+
+(function () {
+  "use strict";
+
+  // ============================================================
+  // RAIN EFFECT (ow-l9w) -- all visual knobs in one place
+  // ============================================================
+  // Per-layer: [far, mid, near]
+  var LAYERS = [
+    { COUNT_PER_MP: 60, COUNT_MAX: 1000, LEN_MIN: 14, LEN_MAX: 30,  SPEED_MIN: 280, SPEED_MAX: 560,  THICK_MIN: 0.4, THICK_MAX: 0.9, ALPHA_MIN: 0.07, ALPHA_MAX: 0.20, WIND_SCALE: 0.50 },
+    { COUNT_PER_MP: 22, COUNT_MAX:  420, LEN_MIN: 28, LEN_MAX: 58,  SPEED_MIN: 560, SPEED_MAX: 980,  THICK_MIN: 0.7, THICK_MAX: 1.5, ALPHA_MIN: 0.13, ALPHA_MAX: 0.34, WIND_SCALE: 0.78 },
+    { COUNT_PER_MP:  7, COUNT_MAX:  140, LEN_MIN: 55, LEN_MAX: 110, SPEED_MIN: 980, SPEED_MAX: 1650, THICK_MIN: 1.1, THICK_MAX: 2.5, ALPHA_MIN: 0.23, ALPHA_MAX: 0.54, WIND_SCALE: 1.00 },
+  ];
+
+  var GUST_AMPLITUDE = 0.10;  // peak-to-zero modulation added on top of wind
+  var GUST_PERIOD    = 8800;  // ms for one full gust cycle
+  var MAX_SLANT_DEG  = 65;    // cap slant angle from vertical (degrees)
+
+  var COLOR      = [190, 210, 235];
+  var BLEND_MODE = "screen";
+
+  var MIST_ALPHA  = 0.038;
+  var MIST_HEIGHT = 0.07;
+  // ============================================================
+
+  function rnd(lo, hi) { return lo + Math.random() * (hi - lo); }
+
+  // Current rain state (driven by __setWallpaperRain)
+  var _active      = false;
+  var _intensity   = 0.0;
+  var _windStr     = 0.0;   // 0..1
+  var _windDir     = 270.0; // degrees FROM
+
+  var _drops  = null;
+  var _cw     = 0;
+  var _ch     = 0;
+
+  window.__l9wStats = { slantSign: 0, frames: 0, maxRenderedAlpha: 0, lastDrawnDx: 0 };
+
+  function makeDrop(lc, w, h, scatter) {
+    return {
+      x:     rnd(scatter ? 0 : -w * 0.1, w * (scatter ? 1.0 : 1.1)),
+      y:     scatter ? rnd(0, h) : rnd(-h * 0.25, -2),
+      speed: rnd(lc.SPEED_MIN, lc.SPEED_MAX),
+      len:   rnd(lc.LEN_MIN,   lc.LEN_MAX),
+      thick: rnd(lc.THICK_MIN, lc.THICK_MAX),
+      alpha: rnd(lc.ALPHA_MIN, lc.ALPHA_MAX),
+    };
+  }
+
+  function buildDrops(w, h) {
+    var intensityScale = 0.3 + 0.7 * _intensity;
+    var mpx = (w * h) / 1e6;
+    _drops = LAYERS.map(function (lc) {
+      var n = Math.min(Math.max(10, Math.round(lc.COUNT_PER_MP * mpx * intensityScale)), lc.COUNT_MAX);
+      var arr = [];
+      for (var i = 0; i < n; i++) { arr.push(makeDrop(lc, w, h, true)); }
+      return arr;
+    });
+    _cw = w;
+    _ch = h;
+  }
+
+  function frame(ctx, w, h, tMs, dtMs) {
+    if (!_drops || _cw !== w || _ch !== h) { buildDrops(w, h); }
+
+    var dt = Math.min(dtMs, 50) / 1000;
+
+    // Base horizontal wind direction from wind state
+    // windDir is degrees the wind comes FROM; horizontal component = -sin(radians) * windStr
+    var windRad = _windDir * Math.PI / 180;
+    var horizDir = -Math.sin(windRad) * _windStr;
+
+    // Max slant: cap at 65 deg from vertical
+    var maxTan = Math.tan(MAX_SLANT_DEG * Math.PI / 180);
+    if (horizDir > maxTan) { horizDir = maxTan; }
+    if (horizDir < -maxTan) { horizDir = -maxTan; }
+
+    // Sinusoidal gust modulation on top of base wind
+    var gustPhase = (tMs % GUST_PERIOD) / GUST_PERIOD * (Math.PI * 2);
+    var gustMod   = GUST_AMPLITUDE * Math.sin(gustPhase);
+    var windFrac  = horizDir + gustMod;
+
+    // Update slant sign for gate readback (positive=right, negative=left)
+    window.__l9wStats.slantSign = horizDir >= 0.0001 ? 1 : (horizDir <= -0.0001 ? -1 : 0);
+    window.__l9wStats.frames += 1;
+
+    var Rc = COLOR[0], Gc = COLOR[1], Bc = COLOR[2];
+
+    ctx.save();
+    ctx.globalCompositeOperation = BLEND_MODE;
+    ctx.lineCap = "round";
+
+    var _dxRecorded = false;
+
+    for (var li = 0; li < LAYERS.length; li++) {
+      var lc        = LAYERS[li];
+      var layerArr  = _drops[li];
+      var wScale    = lc.WIND_SCALE;
+      var speedSpan = lc.SPEED_MAX - lc.SPEED_MIN + 1;
+
+      for (var di = 0; di < layerArr.length; di++) {
+        var d = layerArr[di];
+
+        var vy = d.speed * dt;
+        var vx = d.speed * windFrac * wScale * dt;
+
+        d.x += vx;
+        d.y += vy;
+
+        if (d.y > h + d.len + 6) {
+          var fr = makeDrop(lc, w, h, false);
+          d.x = fr.x; d.y = fr.y;
+          d.speed = fr.speed; d.len = fr.len;
+          d.thick = fr.thick; d.alpha = fr.alpha;
+          continue;
+        }
+
+        var speedRatio = (d.speed - lc.SPEED_MIN) / speedSpan;
+        var streakLen  = d.len * (0.38 + 0.62 * speedRatio);
+        var norm = Math.sqrt(vx * vx + vy * vy);
+        var tx, ty;
+        if (norm < 0.001) {
+          tx = d.x; ty = d.y - streakLen;
+        } else {
+          tx = d.x - (vx / norm) * streakLen;
+          ty = d.y - (vy / norm) * streakLen;
+        }
+
+        if (!_dxRecorded && li === LAYERS.length - 1) {
+          window.__l9wStats.lastDrawnDx = d.x - tx;
+          _dxRecorded = true;
+        }
+
+        var grad = ctx.createLinearGradient(tx, ty, d.x, d.y);
+        grad.addColorStop(0,    "rgba(" + Rc + "," + Gc + "," + Bc + ",0)");
+        grad.addColorStop(0.45, "rgba(" + Rc + "," + Gc + "," + Bc + "," + (d.alpha * 0.45) + ")");
+        grad.addColorStop(1,    "rgba(" + Rc + "," + Gc + "," + Bc + "," + d.alpha + ")");
+
+        ctx.lineWidth   = d.thick;
+        ctx.strokeStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(d.x, d.y);
+        ctx.stroke();
+      }
+    }
+
+    if (MIST_ALPHA > 0) {
+      var mh = h * MIST_HEIGHT;
+      var mg = ctx.createLinearGradient(0, h - mh, 0, h);
+      mg.addColorStop(0, "rgba(" + Rc + "," + Gc + "," + Bc + ",0)");
+      mg.addColorStop(1, "rgba(" + Rc + "," + Gc + "," + Bc + "," + MIST_ALPHA + ")");
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = mg;
+      ctx.fillRect(0, h - mh, w, mh);
+    }
+
+    ctx.restore();
+
+    if (window.__l9wTest === true) {
+      try {
+        var stats = window.__l9wStats;
+        if (typeof stats.maxRenderedAlpha !== 'number') { stats.maxRenderedAlpha = 0; }
+        var stripY = Math.floor(h * 0.40);
+        var stripH = 4;
+        var stripW = Math.max(1, w);
+        var stripData = ctx.getImageData(0, stripY, stripW, stripH).data;
+        for (var pi = 3; pi < stripData.length; pi += 4) {
+          if (stripData[pi] > stats.maxRenderedAlpha) { stats.maxRenderedAlpha = stripData[pi]; }
+        }
+        if (!stats._emptyRegionSampled) {
+          stats._emptyRegionSampled = true;
+          stats.emptyRegionAlpha = ctx.getImageData(0, 0, 1, 1).data[3];
+        }
+      } catch(e) {}
+    }
+  }
+
+  function init(ctx, w, h) {
+    window.__l9wStats.frames = 0;
+    buildDrops(w, h);
+  }
+  function resize(w, h) { buildDrops(w, h); }
+
+  var rainEffect = { frame: frame, init: init, resize: resize };
+
+  window.__l9wRainEffect = rainEffect;
+
+  // Reduced-motion state
+  var _reducedMotion = false;
+  if (typeof window.matchMedia === 'function') {
+    var _rmMq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    _reducedMotion = _rmMq.matches;
+    if (typeof _rmMq.addEventListener === 'function') {
+      _rmMq.addEventListener('change', function (e) {
+        _reducedMotion = e.matches;
+        applyRain(_active, _intensity, _windStr, _windDir);
+      });
+    }
+  }
+
+  var _rainRegistered = false;
+
+  function applyRain(active, intensity, windStr, windDir) {
+    var rm = _reducedMotion || (window.__l9wReducedMotion === true);
+    _active    = active;
+    _intensity = intensity;
+    _windStr   = windStr;
+    _windDir   = windDir;
+    if (rm) {
+      if (_rainRegistered) { window.__overlay.unregister('rain'); _rainRegistered = false; }
+      return;
+    }
+    var effectiveActive = active || (window.__l9wTest === true);
+    if (effectiveActive && !_rainRegistered) {
+      window.__l9wStats.frames = 0;
+      _drops = null; // force rebuild with new intensity
+      window.__overlay.register('rain', rainEffect);
+      window.__overlay.start();
+      _rainRegistered = true;
+    } else if (effectiveActive && _rainRegistered) {
+      // Update params in-place; rebuild drops on next frame due to intensity change
+      _drops = null;
+    } else if (!effectiveActive && _rainRegistered) {
+      window.__overlay.unregister('rain');
+      _rainRegistered = false;
+    }
+  }
+
+  window.__setWallpaperRain = function (s) {
+    if (!s) return;
+    var active    = s.active === true;
+    var intensity = typeof s.intensity    === 'number' ? Math.min(Math.max(s.intensity, 0), 1) : 0;
+    var windStr   = typeof s.windStrength === 'number' ? Math.min(Math.max(s.windStrength, 0), 1) : 0;
+    var windDir   = typeof s.windDir      === 'number' ? s.windDir : 270;
+    applyRain(active, intensity, windStr, windDir);
+  };
+
+  // Apply initial state from document-start injection or default
+  var _initRain = window.__wallpaperRain;
+  window.__setWallpaperRain(_initRain || { active: false, intensity: 0, windStrength: 0, windDir: 270 });
 })();

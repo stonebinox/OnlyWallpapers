@@ -12,6 +12,15 @@ struct WeatherCacheEntry {
     let weatherCode: Int
     let cloudCover: Double
     let precipitation: Double
+    let windSpeed: Double     // km/h from wind_speed_10m
+    let windDirection: Double // degrees FROM, from wind_direction_10m
+}
+
+struct RainState {
+    let active: Bool
+    let intensity: Double      // 0..1
+    let windStrength: Double   // 0..1
+    let windDir: Double        // degrees FROM
 }
 
 @MainActor
@@ -38,6 +47,7 @@ final class MoodController: NSObject {
 
     var onMoodUpdate: ((MoodParams) -> Void)?
     var onStormUpdate: ((Bool) -> Void)?
+    var onRainUpdate: ((RainState) -> Void)?
 
     override init() {
         let env = ProcessInfo.processInfo.environment
@@ -241,6 +251,29 @@ final class MoodController: NSObject {
             stormActive = MoodController.stormActive(resolvedWeather: weather, effectiveCode: effectiveWeatherCode)
         }
         onStormUpdate?(stormActive)
+
+        let rainIsActive: Bool
+        if ProcessInfo.processInfo.environment["OW_L9W_TEST"] == "1" {
+            rainIsActive = true
+        } else {
+            rainIsActive = MoodController.rainActive(resolvedWeather: weather, effectiveCode: effectiveWeatherCode)
+        }
+        let rainPrec = weather?.precipitation ?? 0.0
+        let rainWind = (weather?.windSpeed ?? 0.0, weather?.windDirection ?? 0.0)
+        let testIntensity = ProcessInfo.processInfo.environment["OW_L9W_INTENSITY"].flatMap { Double($0) } ?? 0.6
+        let testWindStr   = ProcessInfo.processInfo.environment["OW_L9W_WINDSTR"].flatMap { Double($0) } ?? 0.4
+        let testWindDir   = ProcessInfo.processInfo.environment["OW_L9W_WINDDIR"].flatMap { Double($0) } ?? 270.0
+        let rainInt: Double
+        let wParams: (windStrength: Double, windDir: Double)
+        if ProcessInfo.processInfo.environment["OW_L9W_TEST"] == "1" {
+            rainInt = testIntensity
+            wParams = (testWindStr, testWindDir)
+        } else {
+            rainInt = MoodController.rainIntensity(precip: rainPrec)
+            wParams = MoodController.windParams(speedKmh: rainWind.0, dirDeg: rainWind.1)
+        }
+        let rainState = RainState(active: rainIsActive, intensity: rainInt, windStrength: wParams.windStrength, windDir: wParams.windDir)
+        onRainUpdate?(rainState)
     }
 
     private func resolveWeather(now: Double) -> WeatherCacheEntry? {
@@ -309,8 +342,29 @@ final class MoodController: NSObject {
         return effectiveCode.map { isThunderstorm($0) } ?? false
     }
 
+    // rainActive: nil or stale resolved weather => false (mirrors stormActive pattern)
+    nonisolated static func rainActive(resolvedWeather: WeatherCacheEntry?, effectiveCode: Int?) -> Bool {
+        guard resolvedWeather != nil else { return false }
+        guard let code = effectiveCode else { return false }
+        switch WeatherGroup(code: code) {
+        case .rain, .storm: return true
+        default:            return false
+        }
+    }
+
+    // rainIntensity: maps precipitation mm to 0..1 (0mm->0, 8mm+->1, clamped)
+    nonisolated static func rainIntensity(precip: Double) -> Double {
+        return min(max(precip / 8.0, 0.0), 1.0)
+    }
+
+    // windParams: clamped windStrength 0..1 from 0..60 km/h, dir passed through
+    nonisolated static func windParams(speedKmh: Double, dirDeg: Double) -> (windStrength: Double, windDir: Double) {
+        let strength = min(max(speedKmh / 60.0, 0.0), 1.0)
+        return (strength, dirDeg)
+    }
+
     nonisolated static func openMeteoURL(lat: Double, lon: Double) -> String {
-        return "https://api.open-meteo.com/v1/forecast?latitude=\(lat)&longitude=\(lon)&timezone=auto&timeformat=unixtime&forecast_days=1&current=weather_code,cloud_cover,precipitation,is_day&daily=sunrise,sunset"
+        return "https://api.open-meteo.com/v1/forecast?latitude=\(lat)&longitude=\(lon)&timezone=auto&timeformat=unixtime&forecast_days=1&current=weather_code,cloud_cover,precipitation,is_day,wind_speed_10m,wind_direction_10m&daily=sunrise,sunset"
     }
 
     private func fetchWeather(lat: Double, lon: Double) async {
@@ -365,11 +419,14 @@ final class MoodController: NSObject {
               let sunsetArr = daily["sunset"] as? [Any],
               let sunriseEpoch = (sunriseArr.first as? NSNumber)?.doubleValue,
               let sunsetEpoch = (sunsetArr.first as? NSNumber)?.doubleValue else { return nil }
+        let ws = d(current, "wind_speed_10m") ?? 0.0
+        let wd = d(current, "wind_direction_10m") ?? 0.0
         return WeatherCacheEntry(
             fetchedAt: Date().timeIntervalSince1970,
             lat: lat, lon: lon,
             sunriseEpoch: sunriseEpoch, sunsetEpoch: sunsetEpoch,
-            weatherCode: wc, cloudCover: cc, precipitation: pr)
+            weatherCode: wc, cloudCover: cc, precipitation: pr,
+            windSpeed: ws, windDirection: wd)
     }
 
     private func sourceTag() -> String {
@@ -415,6 +472,21 @@ final class MoodController: NSObject {
         onMoodUpdate?(params)
         let hookStorm = weather.map { MoodController.isThunderstorm($0.weatherCode) } ?? false
         onStormUpdate?(hookStorm)
+        let hookRainActive = weather.map { MoodController.rainActive(resolvedWeather: WeatherCacheEntry(fetchedAt: Date().timeIntervalSince1970, lat: 0, lon: 0, sunriseEpoch: 0, sunsetEpoch: 86400, weatherCode: $0.weatherCode, cloudCover: $0.cloudCover, precipitation: $0.precipitation, windSpeed: 0, windDirection: 0), effectiveCode: $0.weatherCode) } ?? false
+        let hookRainInt = weather.map { MoodController.rainIntensity(precip: $0.precipitation) } ?? 0.0
+        let hookWindStr: Double
+        let hookWindDir: Double
+        if let jsonStr = env["OW_MOOD_WEATHER_JSON"],
+           let data = jsonStr.data(using: .utf8),
+           let entry = MoodController.parseOpenMeteoResponse(data: data, lat: 0, lon: 0) {
+            hookWindStr = MoodController.windParams(speedKmh: entry.windSpeed, dirDeg: entry.windDirection).windStrength
+            hookWindDir = entry.windDirection
+        } else {
+            hookWindStr = 0.0
+            hookWindDir = 270.0
+        }
+        let hookRainState = RainState(active: hookRainActive, intensity: hookRainInt, windStrength: hookWindStr, windDir: hookWindDir)
+        onRainUpdate?(hookRainState)
     }
 
     deinit {

@@ -104,23 +104,28 @@ enum AppStorageManager {
               let wcode = n("weatherCode"),
               let cc = d("cloudCover"), cc.isFinite,
               let pr = d("precipitation"), pr.isFinite else { return nil }
+        let ws = (wc["windSpeed"] as? NSNumber)?.doubleValue ?? 0.0
+        let wd = (wc["windDirection"] as? NSNumber)?.doubleValue ?? 0.0
         return WeatherCacheEntry(fetchedAt: fa, lat: lat, lon: lon,
                                  sunriseEpoch: sr, sunsetEpoch: ss,
-                                 weatherCode: wcode, cloudCover: cc, precipitation: pr)
+                                 weatherCode: wcode, cloudCover: cc, precipitation: pr,
+                                 windSpeed: ws, windDirection: wd)
     }
 
     @discardableResult
     static func writeWeatherCache(_ entry: WeatherCacheEntry) -> Bool {
         var obj = readConfigDict()
         obj["weatherCache"] = [
-            "fetchedAt":    entry.fetchedAt,
-            "lat":          entry.lat,
-            "lon":          entry.lon,
-            "sunriseEpoch": entry.sunriseEpoch,
-            "sunsetEpoch":  entry.sunsetEpoch,
-            "weatherCode":  entry.weatherCode,
-            "cloudCover":   entry.cloudCover,
-            "precipitation": entry.precipitation
+            "fetchedAt":      entry.fetchedAt,
+            "lat":            entry.lat,
+            "lon":            entry.lon,
+            "sunriseEpoch":   entry.sunriseEpoch,
+            "sunsetEpoch":    entry.sunsetEpoch,
+            "weatherCode":    entry.weatherCode,
+            "cloudCover":     entry.cloudCover,
+            "precipitation":  entry.precipitation,
+            "windSpeed":      entry.windSpeed,
+            "windDirection":  entry.windDirection
         ] as [String: Any]
         return writeConfigDict(obj)
     }

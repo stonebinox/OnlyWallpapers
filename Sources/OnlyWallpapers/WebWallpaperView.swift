@@ -21,8 +21,9 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
     private var latestFraming: AppStorageManager.FramingConfig?
     private var latestMood: MoodParams?
     private var latestStorm: Bool = false
+    private var latestRain: RainState = RainState(active: false, intensity: 0, windStrength: 0, windDir: 0)
 
-    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig, initialMood: MoodParams, initialStorm: Bool) {
+    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig, initialMood: MoodParams, initialStorm: Bool, initialRain: RainState) {
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
         self.screenName = screenName
@@ -124,8 +125,36 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             config.userContentController.addUserScript(rmScript)
         }
 
+        // Rain initial state injection.
+        let l9wTest = ProcessInfo.processInfo.environment["OW_L9W_TEST"] == "1"
+        let effectiveInitialRain = l9wTest ? RainState(
+            active: true,
+            intensity: ProcessInfo.processInfo.environment["OW_L9W_INTENSITY"].flatMap { Double($0) } ?? 0.6,
+            windStrength: ProcessInfo.processInfo.environment["OW_L9W_WINDSTR"].flatMap { Double($0) } ?? 0.4,
+            windDir: ProcessInfo.processInfo.environment["OW_L9W_WINDDIR"].flatMap { Double($0) } ?? 270.0
+        ) : initialRain
+        var rainJS = "window.__wallpaperRain={active:\(effectiveInitialRain.active ? "true" : "false"),intensity:\(effectiveInitialRain.intensity),windStrength:\(effectiveInitialRain.windStrength),windDir:\(effectiveInitialRain.windDir)};"
+        if l9wTest { rainJS += "window.__l9wTest=true;" }
+        let rainInitScript = WKUserScript(
+            source: rainJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(rainInitScript)
+
+        // Reduced-motion test override for rain.
+        if ProcessInfo.processInfo.environment["OW_L9W_REDUCED_MOTION"] == "1" {
+            let l9wRmScript = WKUserScript(
+                source: "window.__l9wReducedMotion=true;",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(l9wRmScript)
+        }
+
         super.init(frame: frame, configuration: config)
         self.latestStorm = initialStorm
+        self.latestRain = initialRain
         // On macOS 26, the public transparency path (underPageBackgroundColor + transparent CSS)
         // leaves the WKWebView base opaque. The page supplies the backdrop (black fallback here;
         // full-bleed video in ow-94b.2). True desktop-through transparency would require the
@@ -296,6 +325,35 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         applyStormNow(active)
     }
 
+    func applyRain(_ state: RainState) {
+        latestRain = state
+        guard isLoaded else { return }
+        applyRainNow(state)
+    }
+
+    private func applyRainNow(_ state: RainState) {
+        let l9wTest = ProcessInfo.processInfo.environment["OW_L9W_TEST"] == "1"
+        let effectiveActive = state.active || l9wTest
+        let effectiveIntensity = l9wTest ? (ProcessInfo.processInfo.environment["OW_L9W_INTENSITY"].flatMap { Double($0) } ?? 0.6) : state.intensity
+        let effectiveWindStr = l9wTest ? (ProcessInfo.processInfo.environment["OW_L9W_WINDSTR"].flatMap { Double($0) } ?? 0.4) : state.windStrength
+        let effectiveWindDir = l9wTest ? (ProcessInfo.processInfo.environment["OW_L9W_WINDDIR"].flatMap { Double($0) } ?? 270.0) : state.windDir
+        let win = self.window?.windowNumber ?? 0
+        let js = "window.__setWallpaperRain({active:\(effectiveActive ? "true" : "false"),intensity:\(effectiveIntensity),windStrength:\(effectiveWindStr),windDir:\(effectiveWindDir)})"
+        self.evaluateJavaScript(js) { [weak self] _, _ in
+            guard let self else { return }
+            let wn = self.window?.windowNumber ?? win
+            let rbJS = "(function(){ var s=window.__overlayStats; if(!s||!s.effects) return 'none'; var n=s.effects.names; return (n&&n.indexOf&&n.indexOf('rain')>=0)?'registered':'none'; })()"
+            self.evaluateJavaScript(rbJS) { [weak self] result, _ in
+                guard let self else { return }
+                let wn2 = self.window?.windowNumber ?? wn
+                let effect = (result as? String) ?? "none"
+                let line = String(format: "ONLYWALLPAPERS_RAIN win=%ld active=%@ intensity=%.4f windStrength=%.4f windDir=%.4f effect=%@\n",
+                                  wn2, effectiveActive ? "true" : "false", effectiveIntensity, effectiveWindStr, effectiveWindDir, effect)
+                FileHandle.standardOutput.write(Data(line.utf8))
+            }
+        }
+    }
+
     private func applyStormNow(_ active: Bool) {
         let wgtTest = ProcessInfo.processInfo.environment["OW_WGT_TEST"] == "1"
         let effective = active || wgtTest
@@ -304,7 +362,7 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         self.evaluateJavaScript(js) { [weak self] _, _ in
             guard let self else { return }
             let wn = self.window?.windowNumber ?? win
-            let rbJS = "(function(){ var s=window.__overlayStats; return s ? (s.hasEffect ? 'registered' : 'none') : 'none'; })()"
+            let rbJS = "(function(){ var s=window.__overlayStats; if(!s||!s.effects) return 'none'; var n=s.effects.names; return (n&&n.indexOf&&n.indexOf('lightning')>=0)?'registered':'none'; })()"
             self.evaluateJavaScript(rbJS) { [weak self] result, _ in
                 guard let self else { return }
                 let wn2 = self.window?.windowNumber ?? wn
@@ -320,7 +378,7 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         self.evaluateJavaScript(js) { [weak self] _, _ in
             guard let self else { return }
             let wn = self.window?.windowNumber ?? win
-            let rbJS = "(function(){ var s=window.__overlayStats; return s ? (s.hasEffect ? 'registered' : 'none') : 'none'; })()"
+            let rbJS = "(function(){ var s=window.__overlayStats; if(!s||!s.effects) return 'none'; var n=s.effects.names; return (n&&n.indexOf&&n.indexOf('lightning')>=0)?'registered':'none'; })()"
             self.evaluateJavaScript(rbJS) { [weak self] result, _ in
                 guard let self else { return }
                 let wn2 = self.window?.windowNumber ?? wn
@@ -369,6 +427,38 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
                 return
             }
             FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STORM_PIXEL win=\(wn) maxRenderedAlpha=\(maxRenderedAlpha) postFlashIdleAlpha=\(postFlashIdleAlpha)\n".utf8))
+        }
+    }
+
+    private func pollRainStats(attempt: Int, maxAttempts: Int) {
+        let js = "(function(){ var s=window.__l9wStats; if(!s) return JSON.stringify(null); return JSON.stringify({slantSign:typeof s.slantSign==='number'?s.slantSign:0,frames:typeof s.frames==='number'?s.frames:0,maxRenderedAlpha:typeof s.maxRenderedAlpha==='number'?s.maxRenderedAlpha:0,lastDrawnDx:typeof s.lastDrawnDx==='number'?s.lastDrawnDx:0}); })()"
+        let win = self.window?.windowNumber ?? 0
+        self.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else { return }
+            let wn = self.window?.windowNumber ?? win
+            guard let str = result as? String, str != "null",
+                  let data = str.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let frames = (obj["frames"] as? NSNumber)?.intValue else {
+                if attempt < maxAttempts {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        self?.pollRainStats(attempt: attempt + 1, maxAttempts: maxAttempts)
+                    }
+                } else {
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_RAIN_STATS win=\(wn) unavailable\n".utf8))
+                }
+                return
+            }
+            if frames < 3 && attempt < maxAttempts {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.pollRainStats(attempt: attempt + 1, maxAttempts: maxAttempts)
+                }
+                return
+            }
+            let slantSign = (obj["slantSign"] as? NSNumber)?.doubleValue ?? 0.0
+            let maxRenderedAlpha = (obj["maxRenderedAlpha"] as? NSNumber)?.intValue ?? 0
+            let lastDrawnDx = (obj["lastDrawnDx"] as? NSNumber)?.doubleValue ?? 0.0
+            FileHandle.standardOutput.write(Data(String(format: "ONLYWALLPAPERS_RAIN_STATS win=%ld slantSign=%.4f frames=%d maxRenderedAlpha=%d renderedDx=%.6f\n", wn, slantSign, frames, maxRenderedAlpha, lastDrawnDx).utf8))
         }
     }
 
@@ -494,6 +584,13 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         if ProcessInfo.processInfo.environment["OW_WGT_TEST"] == "1" {
             pollStormMaxAlpha(attempt: 0, maxAttempts: 40)
         }
+
+        // Re-apply pending rain state (mirrors storm pattern).
+        applyRainNow(latestRain)
+        if ProcessInfo.processInfo.environment["OW_L9W_TEST"] == "1" {
+            pollRainStats(attempt: 0, maxAttempts: 20)
+        }
+
         if ProcessInfo.processInfo.environment["OW_WGT_ENVELOPE_TEST"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                 self?.readFlashEnvelope()

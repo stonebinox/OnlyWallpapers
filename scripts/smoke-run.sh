@@ -26,11 +26,14 @@ if [ -n "$HITS_NSWINDOW" ]; then echo "FAIL: NSWindow found outside WallpaperWin
 echo "[scope] PASS: no forbidden symbols found"
 
 # --- Step 8b: static setActivationPolicy guard ---
-echo "[scope] Checking setActivationPolicy is called exactly once and set to .accessory..."
+# Exactly two calls: .accessory at launch (wallpaper windows must be created accessory, or
+# secondary-display windows land off the active Space) and .regular once they exist (Dock icon).
+echo "[scope] Checking setActivationPolicy is called exactly twice (.accessory then .regular)..."
 SAP_COUNT="$(grep -rno 'setActivationPolicy' Sources/ --include='*.swift' | wc -l | tr -d ' ')"
-if [ "$SAP_COUNT" != "1" ]; then echo "FAIL: expected exactly one setActivationPolicy call, found $SAP_COUNT"; exit 1; fi
-if ! grep -rq 'setActivationPolicy(.accessory)' Sources/ --include='*.swift'; then echo "FAIL: the single setActivationPolicy call is not .accessory"; exit 1; fi
-echo "[scope] PASS: setActivationPolicy(.accessory) called exactly once"
+if [ "$SAP_COUNT" != "2" ]; then echo "FAIL: expected exactly two setActivationPolicy calls, found $SAP_COUNT"; exit 1; fi
+if ! grep -rq 'setActivationPolicy(.accessory)' Sources/ --include='*.swift'; then echo "FAIL: no setActivationPolicy(.accessory) call"; exit 1; fi
+if ! grep -rq 'setActivationPolicy(.regular)' Sources/ --include='*.swift'; then echo "FAIL: no setActivationPolicy(.regular) call"; exit 1; fi
+echo "[scope] PASS: setActivationPolicy called exactly twice (.accessory, .regular)"
 
 # --- Step 8c: web file shape guards (shape-only; not a playback gate; TCC-free) ---
 echo "[shape] Checking web file structure..."
@@ -139,12 +142,12 @@ fi
 READY_LINE="$(grep "ONLYWALLPAPERS_READY" "$TMPOUT" | head -1)"
 echo "[ready] Got: $READY_LINE"
 
-# Confirm policy=accessory (not policy=OTHER:*)
-if ! echo "$READY_LINE" | grep -q "policy=accessory"; then
-    echo "FAIL: ready line does not show policy=accessory: $READY_LINE"
+# Confirm policy=regular (not policy=OTHER:*)
+if ! echo "$READY_LINE" | grep -q "policy=regular"; then
+    echo "FAIL: ready line does not show policy=regular: $READY_LINE"
     exit 1
 fi
-echo "[ready] PASS: policy=accessory confirmed"
+echo "[ready] PASS: policy=regular confirmed"
 
 # Confirm process still alive after ready line
 if ! kill -0 "$PID" 2>/dev/null; then

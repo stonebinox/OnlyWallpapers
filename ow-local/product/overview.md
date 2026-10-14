@@ -29,10 +29,10 @@ control and can hack on.
 3. Live control of the look from the web layer with fast iteration.
 
 ## Non-Goals (for now)
-- A GUI settings app. (A minimal menu-bar status item with a Quit command exists as
-  of ow-aad.5 so the packaged accessory app can be managed and quit; a full controls
-  UI remains out of scope.)
-- App Store distribution and code signing.
+- A GUI settings app. (A menu-bar status item plus a Dock icon and standard app menu
+  exist so the app can be managed and quit; a full controls UI remains out of scope.)
+- App Store distribution, Developer ID signing, and notarization. Public builds are
+  ad-hoc signed and distributed via GitHub Releases (ow-t4r).
 - Bezel-gap correction between monitors.
 - Per-screen independent wallpapers (we are doing one spanned canvas first).
 

@@ -148,6 +148,19 @@ enum AppStorageManager {
         return writeConfigDict(obj)
     }
 
+    // MARK: - First-run hint flag (merge-safe)
+
+    static func readFirstRunHintShown() -> Bool {
+        (readConfigDict()["firstRunHintShown"] as? NSNumber)?.boolValue ?? false
+    }
+
+    // Returns false when config.json could not be written (flag not persisted).
+    static func writeFirstRunHintShown() -> Bool {
+        var obj = readConfigDict()
+        obj["firstRunHintShown"] = true
+        return writeConfigDict(obj)
+    }
+
     static func appSupportRoot() -> URL {
         if let override = testingRootOverride { return override }
         let env = ProcessInfo.processInfo.environment

@@ -274,6 +274,7 @@ final class WallpaperController {
                         initialMood: currentMood,
                         initialStorm: currentStorm,
                         initialRain: currentRain)
+                    webView.screenIndex = i
                     let win = WallpaperWindow(frame: desc.frame, contentView: webView)
                     win.orderFrontRegardless()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak win] in
@@ -349,6 +350,34 @@ final class WallpaperController {
                 }
             }
         }
+    }
+
+    // OW_ACTIVATE_TEST: after the app is activated and a Dock reopen is simulated, every
+    // wallpaper window must still report the desktop window level, stay click-through, and
+    // sit below the desktop-icon layer in the real CG window list.
+    func logActivationCheck(reopenHandled: Bool) {
+        let desktopLevel = Int(CGWindowLevelForKey(.desktopWindow))
+        let iconLevel = Int(CGWindowLevelForKey(.desktopIconWindow))
+        let list = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+        let onScreenList = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+        var okCount = 0
+        var total = 0
+        for rec in records {
+            guard let win = rec.window else { continue }
+            total += 1
+            let layer = list.first { ($0[kCGWindowNumber as String] as? Int) == win.windowNumber }
+                .flatMap { $0[kCGWindowLayer as String] as? Int }
+            let onScreen = onScreenList.contains { ($0[kCGWindowNumber as String] as? Int) == win.windowNumber }
+            let levelOK = win.level.rawValue == desktopLevel
+            let layerOK = layer.map { $0 < iconLevel } ?? false
+            let clickThrough = win.ignoresMouseEvents
+            let notKey = !win.isKeyWindow && !win.isMainWindow
+            if levelOK && layerOK && clickThrough && notKey && onScreen { okCount += 1 }
+            let line = "ONLYWALLPAPERS_ACTIVATE_WINDOW win=\(win.windowNumber) level=\(win.level.rawValue) expected=\(desktopLevel) layer=\(layer.map { "\($0)" } ?? "unknown") level_ok=\(levelOK) below_icons=\(layerOK) click_through=\(clickThrough) not_key=\(notKey) on_screen=\(onScreen) visible=\(win.isVisible) active_space=\(win.isOnActiveSpace)\n"
+            FileHandle.standardOutput.write(Data(line.utf8))
+        }
+        let line = "ONLYWALLPAPERS_ACTIVATE_CHECK active=\(NSApp.isActive) reopen_handled=\(reopenHandled) windows=\(total) desktop_ok=\(okCount)\n"
+        FileHandle.standardOutput.write(Data(line.utf8))
     }
 
     func reloadVideo() {

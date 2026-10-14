@@ -12,10 +12,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Wallpaper windows must be created while the app is still .accessory: windows
+        // created under .regular land off the active Space on every secondary display
+        // (isOnActiveSpace=false, not on screen). becomeRegularApp() flips right after they exist.
         if NSApp.activationPolicy() != .accessory {
             let ok = NSApp.setActivationPolicy(.accessory)
             precondition(ok, "failed to set .accessory activation policy")
         }
+        NSApp.mainMenu = MainMenu.build(aboutTarget: self, aboutAction: #selector(showAbout))
 
         signal(SIGINT, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
@@ -26,10 +30,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        let policy = NSApp.activationPolicy() == .accessory ? "accessory" : "OTHER:\(NSApp.activationPolicy().rawValue)"
+    // Same action as the status-item About item.
+    @objc func showAbout() { AboutPanel.show() }
+
+    // Dock icon click: return false so AppKit does not unminimize or order any window
+    // forward. The wallpaper windows stay at the desktop level, behind the icons.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { false }
+
+    // Dock icon + Cmd-Tab. Called once, after the wallpaper windows exist.
+    private func becomeRegularApp() {
+        let ok = NSApp.setActivationPolicy(.regular)
+        precondition(ok, "failed to set .regular activation policy")
+    }
+
+    // READY carries the final policy, so it is emitted after becomeRegularApp() and after
+    // every signal handler is installed (gates signal the app as soon as they see READY).
+    private func emitReady() {
+        let policy = NSApp.activationPolicy() == .regular ? "regular" : "OTHER:\(NSApp.activationPolicy().rawValue)"
         let pid = ProcessInfo.processInfo.processIdentifier
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_READY policy=\(policy) pid=\(pid)\n".utf8))
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
 
         let env = ProcessInfo.processInfo.environment
         let owWebSpike = env["OW_WEBSPIKE"] == "1"
@@ -74,6 +96,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     webSpikeControllers.append(ctrl)
                 }
             }
+            becomeRegularApp()
+            emitReady()
         } else {
             let wallpaperWebDir = env["WALLPAPER_WEB_DIR"]
             if wallpaperWebDir == nil || (wallpaperWebDir?.isEmpty == true) {
@@ -103,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let controller = WallpaperController()
             controller.initialBuild()
+            becomeRegularApp()
             self.wallpaperController = controller
 
             if env["OW_FAKE_SCREENS_FILE"] != nil {
@@ -206,6 +231,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             statusItemController = statusItem
             mood.start()
+
+            emitReady()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                FirstRunHint.showIfNeeded()
+            }
+
+            if env["OW_ACTIVATE_TEST"] == "1" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self, weak controller] in
+                    guard let self, let controller else { return }
+                    NSApp.activate()
+                    let handled = self.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        controller.logActivationCheck(reopenHandled: handled)
+                    }
+                }
+            }
+
+            if env["OW_ABOUT_TEST"] == "1" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak statusItem] in
+                    AboutPanel.runTestHook(statusItem: statusItem)
+                }
+            }
         }
     }
 }

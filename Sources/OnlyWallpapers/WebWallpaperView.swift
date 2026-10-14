@@ -1,6 +1,30 @@
 import AppKit
 import WebKit
 
+// Surfaces page-level JS failures in the app log (ONLYWALLPAPERS_JS). Separate class to avoid a retain cycle.
+final class WallpaperDiagHandler: NSObject, WKScriptMessageHandler {
+    static let name = "owDiag"
+    static let source = """
+    (function(){
+      function post(k,m){try{window.webkit.messageHandlers.owDiag.postMessage({kind:k,msg:String(m).slice(0,300)});}catch(e){}}
+      window.addEventListener('error',function(e){
+        if(e.target&&e.target!==window){return;}
+        post('error',(e.message||'')+' @'+(e.filename||'')+':'+(e.lineno||0));
+      },true);
+      window.addEventListener('unhandledrejection',function(e){post('rejection',(e.reason&&e.reason.message)||e.reason);});
+      var ce=console.error;
+      console.error=function(){post('console.error',Array.prototype.join.call(arguments,' '));return ce.apply(console,arguments);};
+    })();
+    """
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let dict = message.body as? [String: Any] else { return }
+        let kind = (dict["kind"] as? String) ?? "unknown"
+        let msg = ((dict["msg"] as? String) ?? "").replacingOccurrences(of: "\n", with: " ")
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_JS kind=\(kind) msg=\(msg)\n".utf8))
+    }
+}
+
 final class WebWallpaperView: WKWebView, WKNavigationDelegate {
 
     let screenName: String
@@ -18,6 +42,9 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
     private var latestGeometry: WallpaperSliceGeometry?
     private var latestGen: Int = 0
     private var isLoaded: Bool = false
+    // Index of the screen this view belongs to (set by WallpaperController; used by the OW_SNAPSHOT_TEST log).
+    var screenIndex: Int = 0
+    private var snapshotScheduled: Bool = false
     private var latestFraming: AppStorageManager.FramingConfig?
     private var latestMood: MoodParams?
     private var latestStorm: Bool = false
@@ -151,6 +178,13 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             )
             config.userContentController.addUserScript(l9wRmScript)
         }
+
+        config.userContentController.addUserScript(WKUserScript(
+            source: WallpaperDiagHandler.source,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        config.userContentController.add(WallpaperDiagHandler(), name: WallpaperDiagHandler.name)
 
         super.init(frame: frame, configuration: config)
         self.latestStorm = initialStorm
@@ -597,6 +631,30 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             }
         }
 
+        if ProcessInfo.processInfo.environment["OW_SNAPSHOT_TEST"] == "1" {
+            scheduleSnapshotHook()
+        }
+
+        // Video element state: with no video installed this is the expected quiet no-source state.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self else { return }
+            let wn = self.window?.windowNumber ?? 0
+            let js = "(function(){var v=document.getElementById('bg');return v?JSON.stringify({ns:v.networkState,rs:v.readyState,err:v.error?v.error.code:0,src:v.currentSrc}):'null';})()"
+            self.evaluateJavaScript(js) { result, _ in
+                var line = "ONLYWALLPAPERS_MEDIA win=\(wn) element=missing\n"
+                if let str = result as? String, str != "null",
+                   let data = str.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let ns = (obj["ns"] as? NSNumber)?.intValue ?? -1
+                    let rs = (obj["rs"] as? NSNumber)?.intValue ?? -1
+                    let err = (obj["err"] as? NSNumber)?.intValue ?? -1
+                    let src = (obj["src"] as? String) ?? ""
+                    line = "ONLYWALLPAPERS_MEDIA win=\(wn) networkState=\(ns) readyState=\(rs) error=\(err == 0 ? "none" : "code\(err)") currentSrc=\(src.isEmpty ? "none" : "set")\n"
+                }
+                FileHandle.standardOutput.write(Data(line.utf8))
+            }
+        }
+
         for delay in [1.0, 2.5, 7.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
@@ -613,6 +671,60 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
                     }
                     FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WEB screen=\(sn) win=\(wn) media=\(ms) t=\(delay)\n".utf8))
                 }
+            }
+        }
+    }
+
+    // OW_SNAPSHOT_TEST: after a short settle, snapshot the rendered view and log mean/max RGB
+    // over a sampled grid. Transparent pixels are composited over black, matching the window.
+    private func scheduleSnapshotHook() {
+        if snapshotScheduled { return }
+        snapshotScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            let idx = self.screenIndex
+            func emit(_ tail: String) {
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SNAPSHOT screen=\(idx) \(tail)\n".utf8))
+            }
+            self.takeSnapshot(with: WKSnapshotConfiguration()) { image, err in
+                guard let image,
+                      let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+                      cg.width > 0, cg.height > 0 else {
+                    emit("w=0 h=0 mean=0,0,0 max=0 reason=\(err?.localizedDescription ?? "no-image")")
+                    return
+                }
+                let w = cg.width, h = cg.height
+                var buf = [UInt8](repeating: 0, count: w * h * 4)
+                let drawn: Bool = buf.withUnsafeMutableBytes { raw in
+                    guard let ctx = CGContext(
+                        data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                        bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                    ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+                    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+                    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+                    return true
+                }
+                guard drawn else {
+                    emit("w=\(w) h=\(h) mean=0,0,0 max=0 reason=no-context")
+                    return
+                }
+                let stepX = max(1, w / 64), stepY = max(1, h / 64)
+                var sum = (r: 0, g: 0, b: 0), n = 0, maxV = 0
+                var y = 0
+                while y < h {
+                    var x = 0
+                    while x < w {
+                        let o = (y * w + x) * 4
+                        let r = Int(buf[o]), g = Int(buf[o + 1]), b = Int(buf[o + 2])
+                        sum.r += r; sum.g += g; sum.b += b; n += 1
+                        maxV = max(maxV, r, g, b)
+                        x += stepX
+                    }
+                    y += stepY
+                }
+                let d = max(n, 1)
+                emit("w=\(w) h=\(h) mean=\(sum.r / d),\(sum.g / d),\(sum.b / d) max=\(maxV)")
             }
         }
     }

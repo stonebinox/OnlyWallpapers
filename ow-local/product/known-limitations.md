@@ -33,11 +33,13 @@ Trade-offs we have accepted, with the reason. Revisit these as the project grows
 - **Minimal settings UI.** The menu-bar menu now has a "Choose video..." item that
   sets and persists the wallpaper video (ow-aqx.2); moods and other options are still
   set in the web layer for now (a fuller controls surface is ow-aqx.7).
-- **Unsigned, local (ow-aad.5); universal binary (ow-aad.5.1).** The packaged
-  `OnlyWallpapers.app` is built locally and unsigned (App Store distribution and
-  Developer ID signing are non-goals). A locally built, non-downloaded app has no
-  quarantine so it runs without a Gatekeeper prompt; a copy that is zipped or AirDropped
-  needs `xattr -dr com.apple.quarantine`. The binary is universal (Apple Silicon arm64 +
+- **Ad-hoc signed, not notarized (ow-t4r.3); universal binary (ow-aad.5.1).** The
+  release `OnlyWallpapers.app` is ad-hoc signed (`codesign --sign -`) with no Apple
+  Developer ID and no notarization (App Store distribution and Developer ID signing are
+  non-goals for now). Downloaded copies are quarantined, so Gatekeeper blocks the first
+  launch; users approve it once via System Settings > Privacy & Security > Open Anyway,
+  or run `xattr -dr com.apple.quarantine` on the app. A locally built copy is not
+  quarantined and opens directly. The binary is universal (Apple Silicon arm64 +
   Intel x86_64) and needs macOS 14 (Sonoma) or newer; on Intel Macs video decode runs
   hotter, especially at 4K across multiple displays.
 - **Setting a video (ow-aqx.2, done).** The menu-bar "Choose video..." item copies the

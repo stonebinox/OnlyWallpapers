@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CoreGraphics
 
@@ -767,6 +768,81 @@ enum SelfTest {
         check("flashAlpha-clamped-upper", fa_mid <= fa_peak)
         check("flashAlpha-clamped-lower", fa_mid >= 0)
         check("flashAlpha-negative-zero", SelfTest.flashAlpha(elapsedMs: -1, peakAlpha: fa_peak) == 0)
+
+        // About panel + first-run hint (ow-t4r.2, ow-t4r.4)
+        let aboutItem = StatusItemController.makeAboutItem(target: nil)
+        check("about-item-title", aboutItem.title == "About OnlyWallpapers")
+        check("about-item-action", aboutItem.action == #selector(StatusItemController.aboutAction))
+        let credits = AboutPanel.makeCredits()
+        check("about-credits-author", credits.string.contains("Anoop Santhanam"))
+        check("about-credits-open-meteo-text", credits.string.contains("Weather data by Open-Meteo.com"))
+        var creditLinks: [String] = []
+        credits.enumerateAttribute(.link, in: NSRange(location: 0, length: credits.length)) { v, _, _ in
+            if let u = v as? URL { creditLinks.append(u.absoluteString) }
+        }
+        check("about-credits-link-author", creditLinks.contains("https://anoopsanthanam.com"))
+        check("about-credits-link-open-meteo", creditLinks.contains("https://open-meteo.com"))
+        check("about-credits-link-count", creditLinks.count == 2)
+
+        check("firstrun-show-clean-env", FirstRunHint.shouldShow(env: [:], alreadyShown: false))
+        check("firstrun-hidden-when-shown", !FirstRunHint.shouldShow(env: [:], alreadyShown: true))
+        check("firstrun-hidden-suppress-flag", !FirstRunHint.shouldShow(env: ["OW_SUPPRESS_FIRST_RUN": "1"], alreadyShown: false))
+        check("firstrun-hidden-app-support-dir", !FirstRunHint.shouldShow(env: ["OW_APP_SUPPORT_DIR": "/tmp/x"], alreadyShown: false))
+        check("firstrun-hidden-selftest", !FirstRunHint.shouldShow(env: ["OW_SELFTEST": "1"], alreadyShown: false))
+        check("firstrun-hidden-fake-screens", !FirstRunHint.shouldShow(env: ["OW_FAKE_SCREENS_FILE": "/tmp/f"], alreadyShown: false))
+        check("firstrun-hidden-mood-test", !FirstRunHint.shouldShow(env: ["OW_MOOD_TEST": "1"], alreadyShown: false))
+        check("firstrun-hidden-web-dir", !FirstRunHint.shouldShow(env: ["WALLPAPER_WEB_DIR": "/tmp/w"], alreadyShown: false))
+        check("firstrun-test-override-shows", FirstRunHint.shouldShow(env: ["OW_FIRSTRUN_TEST": "1", "OW_APP_SUPPORT_DIR": "/tmp/x", "WALLPAPER_WEB_DIR": "/tmp/w"], alreadyShown: false))
+        check("firstrun-test-override-respects-shown", !FirstRunHint.shouldShow(env: ["OW_FIRSTRUN_TEST": "1"], alreadyShown: true))
+        check("firstrun-test-override-respects-suppress", !FirstRunHint.shouldShow(env: ["OW_FIRSTRUN_TEST": "1", "OW_SUPPRESS_FIRST_RUN": "1"], alreadyShown: false))
+        check("firstrun-test-override-needs-exact-1", !FirstRunHint.shouldShow(env: ["OW_FIRSTRUN_TEST": "0", "OW_APP_SUPPORT_DIR": "/tmp/x"], alreadyShown: false))
+        check("firstrun-claim-ok", FirstRunHint.claim(persist: { true }))
+        check("firstrun-claim-persist-failed-skips", !FirstRunHint.claim(persist: { false }))
+        check("firstrun-unrelated-env-still-shows", FirstRunHint.shouldShow(env: ["HOME": "/tmp", "PATH": "/usr/bin"], alreadyShown: false))
+
+        let frTmp = FileManager.default.temporaryDirectory.appendingPathComponent("ow-firstrun-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: frTmp, withIntermediateDirectories: true)
+        AppStorageManager.testingRootOverride = frTmp
+        check("firstrun-flag-default-false", !AppStorageManager.readFirstRunHintShown())
+        AppStorageManager.writeFraming(AppStorageManager.FramingConfig(zoom: 1.5, panX: 0.25, panY: -0.25))
+        AppStorageManager.writeLatLon(lat: 12.34, lon: 56.78)
+        check("firstrun-flag-write-ok", AppStorageManager.writeFirstRunHintShown())
+        check("firstrun-flag-reads-true", AppStorageManager.readFirstRunHintShown())
+        check("firstrun-flag-merge-keeps-framing", abs(AppStorageManager.readFraming().zoom - 1.5) < 0.001 && abs(AppStorageManager.readFraming().panX - 0.25) < 0.001)
+        check("firstrun-flag-merge-keeps-latlon", AppStorageManager.readLatLon().map { abs($0.lat - 12.34) < 0.001 && abs($0.lon - 56.78) < 0.001 } ?? false)
+        AppStorageManager.writeFraming(AppStorageManager.FramingConfig(zoom: 1.2, panX: 0, panY: 0))
+        check("firstrun-flag-survives-framing-write", AppStorageManager.readFirstRunHintShown())
+        AppStorageManager.testingRootOverride = nil
+        try? FileManager.default.removeItem(at: frTmp)
+
+        // Unwritable store: the root is a regular file, so config.json can never be created.
+        let frBad = FileManager.default.temporaryDirectory.appendingPathComponent("ow-firstrun-bad-\(UUID().uuidString)")
+        FileManager.default.createFile(atPath: frBad.path, contents: Data("x".utf8))
+        AppStorageManager.testingRootOverride = frBad
+        check("firstrun-flag-write-fails-unwritable", !AppStorageManager.writeFirstRunHintShown())
+        check("firstrun-flag-unwritable-claim-skips", !FirstRunHint.claim(persist: { AppStorageManager.writeFirstRunHintShown() }))
+        check("firstrun-flag-unwritable-still-unset", !AppStorageManager.readFirstRunHintShown())
+        AppStorageManager.testingRootOverride = nil
+        try? FileManager.default.removeItem(at: frBad)
+        check("about-link-count-helper", AboutPanel.linkCount(in: AboutPanel.makeCredits()) == 2)
+
+        // Dock icon + main menu (ow-t4r.6)
+        let mainMenu = MainMenu.build(aboutTarget: nil, aboutAction: #selector(AppDelegate.showAbout))
+        let appMenu = mainMenu.items.first?.submenu
+        check("mainmenu-has-one-top-item", mainMenu.items.count == 1)
+        check("mainmenu-app-menu-titles", appMenu?.items.map { $0.isSeparatorItem ? "-" : $0.title } == MainMenu.appMenuTitles)
+        check("mainmenu-about-title-matches-status-item", appMenu?.items.first?.title == AboutPanel.menuTitle)
+        check("mainmenu-about-action", appMenu?.items.first?.action == #selector(AppDelegate.showAbout))
+        check("mainmenu-hide-cmd-h", appMenu?.items.first { $0.title == "Hide OnlyWallpapers" }?.keyEquivalent == "h")
+        check("mainmenu-hide-others-cmd-opt-h", {
+            let m = appMenu?.items.first { $0.title == "Hide Others" }
+            return m?.keyEquivalent == "h" && m?.keyEquivalentModifierMask == [.command, .option]
+        }())
+        check("mainmenu-show-all-action", appMenu?.items.first { $0.title == "Show All" }?.action == #selector(NSApplication.unhideAllApplications(_:)))
+        check("mainmenu-quit-cmd-q", appMenu?.items.first { $0.title == "Quit OnlyWallpapers" }?.keyEquivalent == "q")
+        check("mainmenu-quit-action", appMenu?.items.first { $0.title == "Quit OnlyWallpapers" }?.action == #selector(NSApplication.terminate(_:)))
+        check("reopen-does-not-handle", AppDelegate().applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false) == false)
+        check("firstrun-message-mentions-dock-and-menu-bar", FirstRunHint.message.contains("Dock") && FirstRunHint.message.contains("menu bar"))
 
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SELFTEST summary passed=\(passed) failed=\(failed)\n".utf8))
         exit(failed == 0 ? 0 : 1)

@@ -21,35 +21,54 @@ rendering.
 - Set your video from the menu-bar icon ("Choose video...", see below). For dev, drop a clip at `Sources/OnlyWallpapers/web/assets/bg.mp4` and use `WALLPAPER_WEB_DIR`.
 - Verification scripts: `scripts/smoke-run.sh` (basic launch), `scripts/webdir-check.sh` (web-dir resolver gates), `scripts/package-check.sh` (standalone .app), `scripts/rebuild-check.sh` (display hot-plug rebuild), `scripts/video-check.sh` (video asset check), `scripts/framing-check.sh` (zoom/pan framing inject, nudge, clamp, zoom-liveness, hot-plug), `scripts/mood-check.sh` (adaptive mood: hook inject, broadcast, weather-fixture, applied-filter readback, no network/location), `scripts/overlay-check.sh` (overlay canvas engine: sized-to-stage backing, rAF loop animates, inert when no effect, per-window DPR), `scripts/lightning-check.sh` (storm lightning: active registers + draws, inert off-storm, real weather-fixture trigger, JS envelope, reduced-motion), `scripts/rain-check.sh` (wind-driven rain: active renders, inert off-rain, real weather-fixture trigger, wind-direction slant, reduced-motion, lightning+rain coexistence), `scripts/mood-live-check.sh` (network-gated: hits the real Open-Meteo API and fails on error).
 
-## Build and install the app
+## Download and install
 
-Run `scripts/package-app.sh` to produce `dist/OnlyWallpapers.app`:
+1. Download the latest build:
+   [OnlyWallpapers.zip](https://github.com/stonebinox/OnlyWallpapers/releases/latest/download/OnlyWallpapers.zip)
+   (or pick a version on the [Releases page](https://github.com/stonebinox/OnlyWallpapers/releases),
+   which also lists a `.sha256` checksum).
+2. Unzip it and drag `OnlyWallpapers.app` to `/Applications`.
+3. Open it. The app is not signed with an Apple Developer ID or notarized, so macOS
+   blocks the first launch. Either:
+   - open System Settings > Privacy & Security, scroll down, and click "Open Anyway"
+     next to the OnlyWallpapers message, then confirm; or
+   - run this once in Terminal:
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/OnlyWallpapers.app
+     ```
+
+Requirements: macOS 14 (Sonoma) or newer. Universal binary (Apple Silicon and Intel).
+
+Using it:
+- The app shows in the Dock and also has a menu-bar icon (top right). The menu-bar
+  icon holds all the controls.
+- The wallpaper starts black. Click the menu-bar icon, choose "Choose video...", and
+  pick an `.mp4` file (MPEG-4/H.264). The app copies it into its own storage
+  (`~/Library/Application Support/OnlyWallpapers/web/assets/bg.mp4`, a single slot
+  overwritten on each new pick) and plays it immediately across all your displays.
+  The choice persists across launches, and you can delete the original file afterward.
+- If the video is cropped awkwardly across your displays, use the "Framing" submenu
+  (move, zoom, reset) to adjust which part of it shows.
+- Weather effects (tint, rain, lightning) are opt-in: choose "Use location for
+  weather tint" from the same menu. See "Adaptive mood" below for what that does.
+- "About OnlyWallpapers" in the menu shows the version and credits.
+- To stop it, choose "Quit OnlyWallpapers" from the menu.
+
+A note on power: a 4K video across several displays keeps the GPU busy. On Intel
+Macs and on battery, decode runs hotter; a 1080p clip is much lighter.
+
+## Build from source
+
+Run `scripts/package-app.sh` to produce an ad-hoc signed `dist/OnlyWallpapers.app`
+plus `dist/OnlyWallpapers-<version>.zip` and its `.sha256`:
 
 ```bash
 scripts/package-app.sh
 ```
 
-Drag `dist/OnlyWallpapers.app` to `/Applications` and open it. Because the app
-is locally built and unsigned (not downloaded or AirDropped), macOS does not
-quarantine it and Gatekeeper will not block it. If you ever zip the app or
-AirDrop it, clear the quarantine flag first:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/OnlyWallpapers.app
-```
-(Point the path at wherever the `.app` actually lives, for example
-`dist/OnlyWallpapers.app` before you move it.)
-
-Once running, the app appears as a small icon in the menu bar. Click it and
-choose "Quit OnlyWallpapers" to stop it.
-
-To set your own video: click the menu-bar icon and choose "Choose video...",
-then pick an `.mp4` file (MPEG-4/H.264). The app copies it into its own storage
-(`~/Library/Application Support/OnlyWallpapers/web/assets/bg.mp4`, a single slot that
-is overwritten on each new pick) and plays it immediately. The choice persists across
-launches and reboots, and you can delete the original file afterward.
-
-Note: universal binary (Apple Silicon arm64 + Intel x86_64); requires macOS 14 (Sonoma) or newer; unsigned, for local personal use. On Intel Macs, video decode runs hotter, especially at 4K across multiple displays.
+The packaged app never contains a video (it starts black). A locally built copy is
+not quarantined, so it opens without a Gatekeeper prompt. `scripts/package-check.sh`
+is the release gate.
 
 ## Adaptive mood (time of day + weather)
 

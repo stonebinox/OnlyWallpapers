@@ -19,6 +19,7 @@ final class StatusItemController {
             button.image = image
         }
         let menu = NSMenu()
+        menu.addItem(StatusItemController.makeAboutItem(target: self))
         let titleItem = NSMenuItem(title: "OnlyWallpapers", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         menu.addItem(titleItem)
@@ -77,7 +78,24 @@ final class StatusItemController {
         quitItem.target = nil
         menu.addItem(quitItem)
         item.menu = menu
-        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STATUSITEM created=\(item.button != nil)\n".utf8))
+        let hasAbout = menu.items.contains { $0.title == AboutPanel.menuTitle }
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_STATUSITEM created=\(item.button != nil) about=\(hasAbout)\n".utf8))
+    }
+
+    static func makeAboutItem(target: AnyObject?) -> NSMenuItem {
+        let aboutItem = NSMenuItem(title: AboutPanel.menuTitle, action: #selector(aboutAction), keyEquivalent: "")
+        aboutItem.target = target
+        return aboutItem
+    }
+
+    @objc func aboutAction() { AboutPanel.show() }
+
+    // Test hook (OW_ABOUT_TEST): fires the real menu item exactly as a click would.
+    @discardableResult
+    func performAboutMenuItem() -> Bool {
+        guard let menuItem = item.menu?.items.first(where: { $0.title == AboutPanel.menuTitle }),
+              let action = menuItem.action else { return false }
+        return NSApp.sendAction(action, to: menuItem.target, from: menuItem)
     }
 
     @objc private func framingMoveUp() { wallpaperController?.panYBy(-0.05) }

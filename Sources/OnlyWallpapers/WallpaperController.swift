@@ -51,11 +51,22 @@ final class WallpaperController {
     nonisolated(unsafe) private var wakeObserver: Any?
     private let isFakeMode: Bool
     private let fakeScreensFile: String?
+    // Shared by every view (ow-blz.5, ow-blz.6). Duration is probed once per source, never per element.
+    private(set) var session: VideoSession
+    // Source of the latest swap (nil until the first Choose video); views re-apply it after any reload.
+    private var latestVideoSrc: String?
+    private var adoptChain = 0
+    private var sessionProbed = false
 
     init() {
         let env = ProcessInfo.processInfo.environment
         self.fakeScreensFile = env["OW_FAKE_SCREENS_FILE"]
         self.isFakeMode = self.fakeScreensFile != nil
+        self.session = VideoSession(epochMs: nowEpochMs(), sourceRev: 0, durationSec: 0, seed: makeSessionSeed(env: env))
+    }
+
+    private static func videoURL(in webDir: URL) -> URL {
+        webDir.appendingPathComponent("assets").appendingPathComponent("bg.mp4")
     }
 
     deinit {
@@ -217,6 +228,12 @@ final class WallpaperController {
         let envWebDir = ProcessInfo.processInfo.environment["WALLPAPER_WEB_DIR"]
             .flatMap { p in p.isEmpty ? nil : URL(fileURLWithPath: p) }
         let webDir: URL? = isFakeMode ? envWebDir : Optional(WebDirectoryResolver.resolve().url)
+        if !sessionProbed, let webDir = webDir {
+            let dur = probeDurationSec(url: Self.videoURL(in: webDir))
+            session = VideoSession(epochMs: session.epochMs, sourceRev: session.sourceRev, durationSec: dur, seed: session.seed)
+            sessionProbed = true
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SESSION epochMs=\(session.epochMs) rev=\(session.sourceRev) durationSec=\(session.durationSec) seed=\(session.seed)\n".utf8))
+        }
         let oldCount = records.count
         let newCount = descriptors.count
 
@@ -230,6 +247,8 @@ final class WallpaperController {
         // RETIRE removed screens
         for rec in records where !nextIDs.contains(rec.displayID) {
             let winNum = rec.window?.windowNumber ?? 0
+            // Timers and test drivers stop first, in fake mode too (its window is not closed).
+            rec.webView?.retire()
             if !isFakeMode {
                 rec.webView?.stopLoading()
                 rec.webView?.navigationDelegate = nil
@@ -254,6 +273,8 @@ final class WallpaperController {
                 // UPDATE survivor: geometry always applied so overlay backing resizes; window frame skipped in fake mode.
                 if !isFakeMode { existing.window?.updateFrame(desc.frame) }
                 existing.webView?.applyGeometry(geo, gen: gen)
+                // The screen order can change across a rebuild: telemetry and test commands route by this index.
+                existing.webView?.screenIndex = i
                 newRecords.append(WallpaperScreenRecord(
                     displayID: desc.displayID,
                     descriptor: desc,
@@ -273,7 +294,12 @@ final class WallpaperController {
                         initialFraming: AppStorageManager.currentFraming,
                         initialMood: currentMood,
                         initialStorm: currentStorm,
-                        initialRain: currentRain)
+                        initialRain: currentRain,
+                        session: session)
+                    webView.latestVideoState = { [weak self] in
+                        guard let self else { return (nil, VideoSession(epochMs: 0, sourceRev: 0, durationSec: 0, seed: 0)) }
+                        return (self.latestVideoSrc, self.session)
+                    }
                     webView.screenIndex = i
                     let win = WallpaperWindow(frame: desc.frame, contentView: webView)
                     win.orderFrontRegardless()
@@ -300,6 +326,7 @@ final class WallpaperController {
         records = newRecords
         committedDescriptors = descriptors
         reducer.pendingState = .idle
+        adoptDurationIfProbeFailed(attempt: 0)
 
         // TELEMETRY (FIX 4: new=0 and count=0 are already present when descriptors is empty)
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_REBUILD gen=\(gen) reason=\(reason) old=\(oldCount) new=\(newCount)\n".utf8))
@@ -383,18 +410,90 @@ final class WallpaperController {
     func reloadVideo() {
         reloadToken += 1
         let token = reloadToken
+        // The probe reads the file the views will load (same web dir), once, before the swap.
+        let webDir = records.compactMap { $0.webView?.webDirectory }.first
+        let dur = webDir.map { probeDurationSec(url: Self.videoURL(in: $0)) } ?? 0
+        session = session.nextSource(epochMs: nowEpochMs(), durationSec: dur)
+        let sess = session
+        latestVideoSrc = "assets/bg.mp4?rev=\(token)"
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SESSION epochMs=\(sess.epochMs) rev=\(sess.sourceRev) durationSec=\(sess.durationSec) seed=\(sess.seed)\n".utf8))
         var viewCount = 0
         for rec in records {
             guard let view = rec.webView else { continue }
             viewCount += 1
             let winNum = rec.window?.windowNumber ?? 0
-            let js = "window.__setWallpaperVideo('assets/bg.mp4?rev=\(token)')"
-            view.evaluateJavaScript(js) { [weak self, weak view, token, winNum] _, _ in
+            view.setVideo(src: "assets/bg.mp4?rev=\(token)", session: sess) { [weak self, weak view, token, winNum] in
                 guard let self, let view else { return }
                 self.pollVideoApplied(view: view, token: token, winNum: winNum, attempt: 0)
             }
         }
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_VIDEO reload views=\(viewCount) rev=\(token)\n".utf8))
+        adoptDurationIfProbeFailed(attempt: 0)
+    }
+
+    // The native probe failed (duration 0): take the first view's reported metadata duration, set it on
+    // the session, and broadcast it, so every view still shares ONE duration (never per-element).
+    func adoptDurationIfProbeFailed(attempt: Int, chain: Int? = nil) {
+        guard session.durationSec <= 0 else { return }
+        // A fresh call supersedes any polling chain still running.
+        let myChain: Int
+        if let chain { myChain = chain } else { adoptChain += 1; myChain = adoptChain }
+        guard myChain == adoptChain else { return }
+        let rev = session.sourceRev
+        var answered = false
+        for rec in records {
+            rec.webView?.readMetadataDuration { [weak self] d in
+                guard let self, !answered, self.session.sourceRev == rev, self.session.durationSec <= 0 else { return }
+                let adopted = self.session.adoptingDuration(d)
+                guard adopted != self.session else { return }
+                answered = true
+                self.session = adopted
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SESSION adopted rev=\(adopted.sourceRev) durationSec=\(adopted.durationSec) source=first-view-metadata\n".utf8))
+                for r in self.records { r.webView?.applySession(adopted) }
+            }
+        }
+        if attempt < 40 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self, self.session.sourceRev == rev, self.session.durationSec <= 0 else { return }
+                self.adoptDurationIfProbeFailed(attempt: attempt + 1, chain: myChain)
+            }
+        }
+    }
+
+    // OW_SYNC_TEST command channel (SIGUSR2): lines of "desync <screenIndex> <ms>", "reload <screenIndex>", "extra <screenIndex>" and "swap <path>".
+    func syncTestCommands(file: String) {
+        guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return }
+        for raw in text.components(separatedBy: "\n") {
+            let parts = raw.trimmingCharacters(in: .whitespaces).components(separatedBy: " ")
+            guard let cmd = parts.first, !cmd.isEmpty else { continue }
+            if cmd == "desync", parts.count >= 3, let idx = Int(parts[1]), let ms = Double(parts[2]) {
+                for rec in records {
+                    if let v = rec.webView, v.screenIndex == idx { v.syncTestDesync(ms: ms) }
+                }
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC_CMD desync idx=\(idx) ms=\(ms) at=\(nowEpochMs())\n".utf8))
+            } else if cmd == "extra", parts.count >= 2, let idx = Int(parts[1]) {
+                for rec in records {
+                    if let v = rec.webView, v.screenIndex == idx { v.syncTestExtraStrike() }
+                }
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC_CMD extra idx=\(idx) at=\(nowEpochMs())\n".utf8))
+            } else if cmd == "reload", parts.count >= 2, let idx = Int(parts[1]) {
+                for rec in records {
+                    if let v = rec.webView, v.screenIndex == idx { v.syncTestReload() }
+                }
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC_CMD reload idx=\(idx) at=\(nowEpochMs())\n".utf8))
+            } else if cmd == "swap", parts.count >= 2 {
+                let src = URL(fileURLWithPath: parts.dropFirst().joined(separator: " "))
+                guard let webDir = records.compactMap({ $0.webView?.webDirectory }).first else { continue }
+                let dest = Self.videoURL(in: webDir)
+                try? FileManager.default.removeItem(at: dest)
+                do { try FileManager.default.copyItem(at: src, to: dest) } catch {
+                    FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC_CMD swap=fail error=\(error.localizedDescription)\n".utf8))
+                    continue
+                }
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC_CMD swap at=\(nowEpochMs())\n".utf8))
+                reloadVideo()
+            }
+        }
     }
 
     func applyFramingToAll() {

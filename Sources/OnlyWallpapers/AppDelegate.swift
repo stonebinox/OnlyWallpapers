@@ -211,6 +211,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 usr2Src.resume()
                 self.sigUSR2Source = usr2Src
+            } else if env["OW_SYNC_TEST"] == "1", let cmdFile = env["OW_SYNC_CMD_FILE"], !cmdFile.isEmpty {
+                signal(SIGUSR2, SIG_IGN)
+                let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+                usr2Src.setEventHandler { [weak controller] in
+                    controller?.syncTestCommands(file: cmdFile)
+                }
+                usr2Src.resume()
+                self.sigUSR2Source = usr2Src
             } else if env["OW_MOOD_TEST"] == "1" {
                 signal(SIGUSR2, SIG_IGN)
                 let usr2Src = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)

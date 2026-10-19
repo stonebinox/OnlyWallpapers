@@ -131,11 +131,12 @@ OnlyWallpapers/
 │   ├── MoodController.swift          # time-of-day + live-weather mood brain: CoreLocation + Open-Meteo + openMeteoURL (ow-aqx.15)
 │   ├── MoodMapper.swift              # pure moodParams + cssFilter + weather hysteresis (ow-aqx.15)
 │   ├── WallpaperWindow.swift         # borderless desktop-layer, click-through window
-│   ├── WebWallpaperView.swift        # WKWebView (opaque base + black fallback, local file access); applies framing + mood
+│   ├── WebWallpaperView.swift        # WKWebView (opaque base + black fallback, local file access); applies framing + mood + sync session
+│   ├── VideoSession.swift            # shared playback session (epochMs, sourceRev, durationSec, seed) for cross-display sync (ow-blz.5)
 │   └── web/                          # render layer; hot-editable via WALLPAPER_WEB_DIR
 │       ├── index.html  style.css  wallpaper.js
 │       └── assets/                   # bg.mp4 etc (gitignored)
-├── scripts/                          # smoke-run, webdir-check, package-app/check, rebuild-check, video-check, framing-check, mood-check, overlay-check, lightning-check
+├── scripts/                          # smoke-run, webdir-check, package-app/check, rebuild-check, video-check, framing-check, mood-check, overlay-check, lightning-check, rain-check, sync-check
 └── ow-local/                         # knowledge repo (folder, same git history)
 ```
 

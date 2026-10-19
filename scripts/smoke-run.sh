@@ -50,7 +50,12 @@ check_contains() {
 
 check_contains "$WEB_DIR/index.html" 'id="bg"'           'id="bg"'
 check_contains "$WEB_DIR/index.html" 'muted'              'muted attribute'
-check_contains "$WEB_DIR/index.html" 'loop'               'loop attribute'
+# ow-blz.5: the JS sync controller is the only caller of play() and the only author of the wrap,
+# so the video element must carry neither autoplay nor loop.
+if grep -Eq '<video[^>]*[[:space:]](autoplay|loop)([[:space:]=>]|$)' "$WEB_DIR/index.html" 2>/dev/null; then
+    echo "FAIL [shape]: <video> in $WEB_DIR/index.html still has autoplay or loop (sync controller must own play and wrap)"
+    SHAPE_FAIL=1
+fi
 check_contains "$WEB_DIR/index.html" 'playsinline'        'playsinline attribute'
 check_contains "$WEB_DIR/index.html" 'src="assets/bg\.mp4"' 'src="assets/bg.mp4"'
 check_contains "$WEB_DIR/index.html" '<canvas'            '<canvas element'
@@ -60,6 +65,9 @@ check_contains "$WEB_DIR/style.css"  'object-fit'         'object-fit in style.c
 check_contains "$WEB_DIR/style.css"  'filter'             'filter in style.css'
 check_contains "$WEB_DIR/style.css"  '#bg'                '#bg in style.css'
 check_contains "$WEB_DIR/wallpaper.js" 'video\.play'      'video.play in wallpaper.js'
+check_contains "$WEB_DIR/wallpaper.js" '__wallpaperSession' '__wallpaperSession (sync session) in wallpaper.js'
+check_contains "$WEB_DIR/wallpaper.js" 'requestVideoFrameCallback' 'requestVideoFrameCallback (presented frame) in wallpaper.js'
+check_contains "$WEB_DIR/wallpaper.js" '__wgtLightningAt'  'stateless lightning function in wallpaper.js'
 check_contains "$WEB_DIR/wallpaper.js" '__wallpaper'       '__wallpaper in wallpaper.js'
 check_contains "$WEB_DIR/wallpaper.js" 'stage\.style'      'stage.style in wallpaper.js'
 check_contains "$WEB_DIR/style.css"    'position.*fixed'   'position: fixed in style.css'

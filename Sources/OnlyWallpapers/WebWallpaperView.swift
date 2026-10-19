@@ -42,6 +42,9 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
     private var latestGeometry: WallpaperSliceGeometry?
     private var latestGen: Int = 0
     private var isLoaded: Bool = false
+    // The controller's LATEST (source, session). A view that loaded, reloaded, or lost its web content
+    // process while a swap happened re-applies this in didFinish, so no display stays on an old session.
+    var latestVideoState: (() -> (src: String?, session: VideoSession))?
     // Index of the screen this view belongs to (set by WallpaperController; used by the OW_SNAPSHOT_TEST log).
     var screenIndex: Int = 0
     private var snapshotScheduled: Bool = false
@@ -50,7 +53,7 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
     private var latestStorm: Bool = false
     private var latestRain: RainState = RainState(active: false, intensity: 0, windStrength: 0, windDir: 0)
 
-    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig, initialMood: MoodParams, initialStorm: Bool, initialRain: RainState) {
+    init(frame: NSRect, webDirectory: URL, screenName: String, geometry: WallpaperSliceGeometry, commitGen: Int, initialFraming: AppStorageManager.FramingConfig, initialMood: MoodParams, initialStorm: Bool, initialRain: RainState, session: VideoSession) {
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
         self.screenName = screenName
@@ -106,6 +109,16 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
             )
             config.userContentController.addUserScript(fscript)
         }
+
+        // Shared session (epoch, source rev, probed duration, seed): document-start, so the sync
+        // controller and the lightning schedule never run without it (newcomers included).
+        var sessionJS = session.userScriptSource
+        if ProcessInfo.processInfo.environment["OW_SYNC_TEST"] == "1" { sessionJS += "window.__syncTest=true;" }
+        config.userContentController.addUserScript(WKUserScript(
+            source: sessionJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
 
         // Mood injection: document-start, newcomers never paint bare identity filter.
         let moodHook = ProcessInfo.processInfo.environment["OW_MOOD_TEST"] == "1"
@@ -406,6 +419,129 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         }
     }
 
+    // Choose video: ONE JS call that sets the new source and the new session together, so no
+    // window ever plays the new file against the old epoch.
+    func setVideo(src: String, session: VideoSession, completion: @escaping () -> Void) {
+        let escaped = src.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let js = "window.__setWallpaperVideo('\(escaped)', \(session.jsLiteral))"
+        let win = self.window?.windowNumber ?? 0
+        evaluateJavaScript(js) { _, error in
+            if let error {
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC setVideo error=\(error.localizedDescription) win=\(win) rev=\(session.sourceRev)\n".utf8))
+            }
+            completion()
+        }
+    }
+
+    // Broadcast target for a session that changed without a source change (probe-failure duration adoption).
+    func applySession(_ session: VideoSession) {
+        let win = self.window?.windowNumber ?? 0
+        evaluateJavaScript("window.__applyWallpaperSession && window.__applyWallpaperSession(\(session.jsLiteral))") { _, error in
+            if let error {
+                FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC applySession error=\(error.localizedDescription) win=\(win) rev=\(session.sourceRev)\n".utf8))
+            }
+        }
+    }
+
+    // Re-apply the controller's latest session and source to a freshly loaded document.
+    private func reapplyLatestVideoState() {
+        guard let st = latestVideoState?() else { return }
+        let win = self.window?.windowNumber ?? 0
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC reapply win=\(win) rev=\(st.session.sourceRev) src=\(st.src ?? "none")\n".utf8))
+        if let src = st.src {
+            setVideo(src: src, session: st.session) {}
+        } else {
+            applySession(st.session)
+        }
+    }
+
+    // Web content process recovery and the OW_SYNC_TEST reload hook share this path.
+    func reloadDocument() {
+        isLoaded = false
+        loadFileURL(index, allowingReadAccessTo: webDirectory.standardizedFileURL)
+    }
+
+    // Reports the element's own metadata duration (probe-failure path only; JS never uses it itself).
+    func readMetadataDuration(_ completion: @escaping (Double) -> Void) {
+        evaluateJavaScript("window.__videoMetaDuration || 0") { result, _ in
+            completion((result as? NSNumber)?.doubleValue ?? 0)
+        }
+    }
+
+    // OW_SYNC_TEST: log one JSON sample per window every 250 ms and the lightning event log every second.
+    private var syncSampler: Timer?
+    private var syncFrameDriver: Timer?
+    private var syncFrameInFlight = false
+    // Occluded windows get no rAF and only throttled timers, so test modes that need to observe a
+    // flash drive the overlay frame from native (evaluateJavaScript is not throttled).
+    private func startOverlayFrameDriver() {
+        guard !isRetired, syncFrameDriver == nil else { return }
+        syncFrameDriver = Timer.scheduledTimer(withTimeInterval: 0.033, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.isRetired else { return }
+                // One frame in flight at a time: a 3 display canvas frame can outlast the timer period,
+                // and queued frames would starve the sample replies.
+                if self.syncFrameInFlight { return }
+                self.syncFrameInFlight = true
+                self.evaluateJavaScript("window.__syncOverlayFrame && window.__syncOverlayFrame()") { [weak self] _, _ in
+                    self?.syncFrameInFlight = false
+                }
+            }
+        }
+    }
+
+    private func startSyncSampler() {
+        guard !isRetired, syncSampler == nil else { return }
+        startOverlayFrameDriver()
+        syncSampler = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.isRetired else { return }
+                self.syncTick += 1
+                let win = self.window?.windowNumber ?? 0
+                let idx = self.screenIndex
+                self.evaluateJavaScript("JSON.stringify(window.__syncSample ? window.__syncSample() : null)") { result, _ in
+                    if let str = result as? String, str != "null" {
+                        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC win=\(win) idx=\(idx) \(str)\n".utf8))
+                    }
+                }
+                if self.syncTick % 4 == 0 {
+                    self.evaluateJavaScript("JSON.stringify(window.__syncEvents ? window.__syncEvents() : null)") { result, _ in
+                        if let str = result as? String, str != "null" {
+                            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SYNC_EVENTS win=\(win) idx=\(idx) \(str)\n".utf8))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    private var syncTick: Int = 0
+
+    private(set) var isRetired = false
+
+    // Called by the controller when this view's screen goes away: stops the repeating timers (they
+    // would otherwise keep firing against a dead view across hot-plug cycles) and blocks restarts.
+    func retire() {
+        guard !isRetired else { return }
+        isRetired = true
+        let had = (syncSampler != nil ? 1 : 0) + (syncFrameDriver != nil ? 1 : 0)
+        syncSampler?.invalidate()
+        syncSampler = nil
+        syncFrameDriver?.invalidate()
+        syncFrameDriver = nil
+        syncFrameInFlight = false
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_VIEW_RETIRED win=\(window?.windowNumber ?? 0) timers_invalidated=\(had)\n".utf8))
+    }
+
+    func syncTestExtraStrike() {
+        evaluateJavaScript("window.__syncTestExtraStrike && window.__syncTestExtraStrike(500)") { _, _ in }
+    }
+
+    func syncTestReload() { reloadDocument() }
+
+    func syncTestDesync(ms: Double) {
+        evaluateJavaScript("window.__syncTestDesync && window.__syncTestDesync(\(ms))") { _, _ in }
+    }
+
     func applyStormForceOff() {
         let win = self.window?.windowNumber ?? 0
         let js = "window.__wgtTest=false; window.__setWallpaperStorm(false);"
@@ -550,6 +686,7 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         isLoaded = true
+        reapplyLatestVideoState()
         let win = self.window?.windowNumber ?? 0
         // Use the latest requested gen if applyGeometry has already advanced past commitGen.
         let loadedGen = latestGeometry != nil ? latestGen : commitGen
@@ -633,6 +770,18 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
 
         if ProcessInfo.processInfo.environment["OW_SNAPSHOT_TEST"] == "1" {
             scheduleSnapshotHook()
+        }
+
+        if ProcessInfo.processInfo.environment["OW_WGT_TEST"] == "1" { startOverlayFrameDriver() }
+        if ProcessInfo.processInfo.environment["OW_SYNC_TEST"] == "1" {
+            // Falsifiability hook: a constant bias on the window with screen index 1.
+            if screenIndex == 1, let biasStr = ProcessInfo.processInfo.environment["OW_SYNC_TEST_BIAS_MS"], let bias = Double(biasStr) {
+                evaluateJavaScript("window.__syncTestBias && window.__syncTestBias(\(bias))") { _, _ in }
+            }
+            if screenIndex == 1, let delayStr = ProcessInfo.processInfo.environment["OW_SYNC_TEST_LIGHTNING_DELAY_MS"], let delay = Double(delayStr) {
+                evaluateJavaScript("window.__syncTestLightningDelay && window.__syncTestLightningDelay(\(delay))") { _, _ in }
+            }
+            startSyncSampler()
         }
 
         // Video element state: with no video installed this is the expected quiet no-source state.
@@ -739,6 +888,7 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_WEB screen=\(screenName) terminated\n".utf8))
+        reloadDocument()
     }
 
     private func readFlashEnvelope() {

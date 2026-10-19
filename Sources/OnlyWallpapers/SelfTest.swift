@@ -844,6 +844,41 @@ enum SelfTest {
         check("reopen-does-not-handle", AppDelegate().applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false) == false)
         check("firstrun-message-mentions-dock-and-menu-bar", FirstRunHint.message.contains("Dock") && FirstRunHint.message.contains("menu bar"))
 
+        // Shared session tuple (ow-blz.5, ow-blz.6)
+        let sess0 = VideoSession(epochMs: 1_760_000_000_123, sourceRev: 0, durationSec: 6.0, seed: 4_000_000_000)
+        check("session-js-literal", sess0.jsLiteral == "{\"epochMs\":1760000000123,\"sourceRev\":0,\"durationSec\":6.0,\"seed\":4000000000}")
+        check("session-userscript-assigns-window", sess0.userScriptSource.hasPrefix("window.__wallpaperSession = {"))
+        let sess1 = sess0.nextSource(epochMs: 1_760_000_100_000, durationSec: 4.5)
+        check("session-next-bumps-rev", sess1.sourceRev == 1 && sess0.sourceRev == 0)
+        check("session-next-keeps-seed", sess1.seed == sess0.seed)
+        check("session-next-new-epoch-duration", sess1.epochMs == 1_760_000_100_000 && sess1.durationSec == 4.5)
+        check("session-equatable", sess0 == sess0 && sess0 != sess1)
+        check("session-nonfinite-duration-is-zero", VideoSession(epochMs: 1, sourceRev: 0, durationSec: .nan, seed: 1).jsLiteral.contains("\"durationSec\":0"))
+        check("session-negative-duration-is-zero", VideoSession(epochMs: 1, sourceRev: 0, durationSec: -3, seed: 1).jsLiteral.contains("\"durationSec\":0"))
+        check("session-seed-fixed-in-sync-test", makeSessionSeed(env: ["OW_SYNC_TEST": "1"]) == makeSessionSeed(env: ["OW_SYNC_TEST": "1"]))
+        check("session-seed-fixed-in-wgt-test", makeSessionSeed(env: ["OW_WGT_TEST": "1"]) == makeSessionSeed(env: ["OW_SYNC_TEST": "1"]))
+        check("session-seed-env-override", makeSessionSeed(env: ["OW_SYNC_SEED": "77"]) == 77)
+        check("session-probe-missing-file-is-zero", probeDurationSec(url: URL(fileURLWithPath: "/nonexistent/ow-no-such.mp4")) == 0)
+        check("session-probe-garbage-file-is-zero", {
+            let junk = FileManager.default.temporaryDirectory.appendingPathComponent("ow-junk-\(UUID().uuidString).mp4")
+            try? Data("not a video".utf8).write(to: junk)
+            defer { try? FileManager.default.removeItem(at: junk) }
+            return probeDurationSec(url: junk) == 0
+        }())
+        check("session-epoch-ms-plausible", nowEpochMs() > 1_700_000_000_000)
+
+        // Probe-failure path: the first reported element duration becomes the one shared duration.
+        let probeFailed = VideoSession(epochMs: 5, sourceRev: 3, durationSec: 0, seed: 9)
+        let adopted = probeFailed.adoptingDuration(4.0)
+        check("session-adopt-sets-duration-keeps-rest", adopted.durationSec == 4.0 && adopted.epochMs == 5 && adopted.sourceRev == 3 && adopted.seed == 9)
+        check("session-adopt-first-wins", adopted.adoptingDuration(7.5) == adopted)
+        check("session-adopt-ignores-zero", probeFailed.adoptingDuration(0) == probeFailed)
+        check("session-adopt-ignores-nan", probeFailed.adoptingDuration(.nan) == probeFailed)
+        check("session-adopt-ignores-infinite", probeFailed.adoptingDuration(.infinity) == probeFailed)
+        check("session-adopt-ignores-negative", probeFailed.adoptingDuration(-2) == probeFailed)
+        check("session-adopt-literal-carries-duration", adopted.jsLiteral.contains("\"durationSec\":4.0"))
+        check("session-adopt-leaves-probed-session-alone", sess0.adoptingDuration(99) == sess0)
+
         FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SELFTEST summary passed=\(passed) failed=\(failed)\n".utf8))
         exit(failed == 0 ? 0 : 1)
     }

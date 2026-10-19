@@ -19,8 +19,8 @@ identical on every screen (see Adaptive Mood). Still planned: overlay-canvas par
 effects (Epic D, ow-aqx.3).
 
 ## Files
-- **index.html**: a `#stage` containing the `<video id="bg">` (muted, playsinline,
-  loop, autoplay) and an overlay `<canvas>` reserved for future effects (inert).
+- **index.html**: a `#stage` containing the `<video id="bg">` (muted, playsinline; NO
+  loop or autoplay since ow-blz.5, the sync controller owns play() and the wrap) and an overlay `<canvas>` reserved for future effects (inert).
 - **style.css**: full-bleed video with `object-fit: cover`; the `filter` on `#bg` is
   the live-control knob for the look. Its default is now the mood identity 5-tuple
   `brightness(1.01) saturate(1) contrast(1.01) hue-rotate(0deg) sepia(0)` (same five
@@ -31,8 +31,10 @@ effects (Epic D, ow-aqx.3).
 - **wallpaper.js**: four IIFEs. A geometry IIFE reads `window.__wallpaper` and
   positions `#stage` by `left/top` to this screen's slice (recording the applied rect
   in `window.__wallpaperApplied`); a framing IIFE applies `window.__wallpaperFraming`;
-  an autoplay IIFE kicks `play()` with `canplay`/`loadeddata` retries and an `ended`
-  belt; and a MOOD IIFE (ow-aqx.15) exposes `window.__setWallpaperMood`, validates the
+  a SYNC controller (ow-blz.5, replaced the old autoplay IIFE) that follows the shared
+  session clock in `window.__wallpaperSession`, seeks on join and on drift beyond 2 frames,
+  nudges playbackRate within [0.99, 1.01] and performs the loop wrap itself, so every
+  display presents the same frame; and a MOOD IIFE (ow-aqx.15) exposes `window.__setWallpaperMood`, validates the
   incoming filter against the 5-function shape, applies it to `#bg.style.filter`
   (transition off on the first apply, then re-enabled so it does not snap on load), and
   records the parsed numbers in `window.__moodApplied`.
@@ -42,7 +44,7 @@ The shell injects, at document start, a per-screen payload via a `WKUserScript`:
 ```js
 window.__wallpaper = { stageW, stageH, offX, offY }
 ```
-`wallpaper.js` then (in a geometry IIFE separate from the autoplay IIFE):
+`wallpaper.js` then (in a geometry IIFE separate from the sync controller):
 - sizes `#stage` to the full canvas: `width = stageW`, `height = stageH`;
 - shifts it so this screen shows only its slice by POSITIONING, not a transform:
   `#stage { position: fixed; left: -offX px; top: -offY px }`.

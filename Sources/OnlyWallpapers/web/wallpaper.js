@@ -46,23 +46,6 @@
 })();
 
 (function () {
-  "use strict";
-  var video = document.getElementById("bg");
-  if (!video) return;
-  function tryPlay() {
-    video.muted = true;
-    video.defaultMuted = true;
-    video.playsInline = true;
-    var p = video.play();
-    if (p && typeof p.catch === "function") { p.catch(function () {}); }
-  }
-  video.addEventListener("canplay", tryPlay);
-  video.addEventListener("loadeddata", tryPlay);
-  video.addEventListener("ended", tryPlay);
-  tryPlay();
-})();
-
-(function () {
   var _moodApplied = false;
   var MOOD_RE = /^brightness\(\S+\)\s+saturate\(\S+\)\s+contrast\(\S+\)\s+hue-rotate\(\S+\)\s+sepia\(\S+\)$/;
 
@@ -136,6 +119,13 @@
     var d = window.devicePixelRatio || 1;
     var bs = backingSize(stageW, stageH, d);
     if (!bs) return;
+    // Assigning width reallocates and clears the whole backing store (100 MB on a 3 display
+    // stage) and stalls this page for seconds. A geometry update that only moves the slice
+    // offset leaves the size unchanged, so skip the reallocation.
+    if (canvas.width === bs.w && canvas.height === bs.h) {
+      window.__overlayStats.sized = { w: bs.w, h: bs.h, dpr: d };
+      return;
+    }
     canvas.width = bs.w;
     canvas.height = bs.h;
     canvas.style.width = "100%";
@@ -179,9 +169,7 @@
     }
   };
 
-  function loop(ts) {
-    if (!running) return;
-    rafId = requestAnimationFrame(loop);
+  function drawFrame(ts) {
     var dt = lastTs === null ? 0 : Math.min(ts - lastTs, 100);
     lastTs = ts;
     var w = canvas.width, h = canvas.height;
@@ -190,6 +178,21 @@
       effects[effectOrder[i]].frame(ctx, w, h, ts, dt);
     }
     window.__overlayStats.frames += 1;
+  }
+
+  function loop(ts) {
+    if (!running) return;
+    rafId = requestAnimationFrame(loop);
+    drawFrame(ts);
+  }
+
+  // OW_SYNC_TEST: occluded windows get no rAF and only 1 Hz timers, so the native test sampler
+  // drives frames through this hook. It runs the same frame code as rAF does.
+  if (window.__syncTest === true || window.__wgtTest === true) {
+    window.__syncOverlayFrame = function () {
+      if (!running || effectOrder.length === 0) return;
+      drawFrame(performance.now());
+    };
   }
 
   function start() {
@@ -264,7 +267,9 @@
     setTimeout(function() {
       if (_rafFired || !running || effectOrder.length === 0) return;
       var _iv = setInterval(function() {
-        if (!running || effectOrder.length === 0 || window.__overlayStats.frames >= 3) {
+        // The lightning schedule is a pure function of the wall clock (a burst lands anywhere in its
+        // slot), so wgt test mode keeps this fallback running to catch a flash on a throttled window.
+        if (!running || effectOrder.length === 0 || (window.__overlayStats.frames >= 3 && window.__wgtTest !== true)) {
           clearInterval(_iv); return;
         }
         var now = performance.now();
@@ -281,26 +286,384 @@
   }
 })();
 
-window.__setWallpaperVideo = function(src) {
-  var v = document.getElementById("bg");
-  if (!v) return;
-  while (v.firstChild) { v.removeChild(v.firstChild); }
-  v.removeAttribute("src");
-  v.src = src;
-  window.__lastVideoApplied = { src: '', durationMs: 0 };
-  v.load();
-  v.addEventListener('loadedmetadata', function onMeta() {
-    v.removeEventListener('loadedmetadata', onMeta);
-    window.__lastVideoApplied = { src: v.currentSrc, durationMs: Math.round((v.duration||0)*1000) };
+(function () {
+  "use strict";
+  var video = document.getElementById("bg");
+  if (!video) return;
+
+  // ow-blz.5: the sync controller is the ONLY caller of play() and the only author of the wrap.
+  // The <video> has no autoplay and no loop. Target time is a pure function of the wall clock
+  // and the native session tuple (epochMs, sourceRev, durationSec, seed).
+  var TICK_MS = 250;
+  var RATE_SPAN = 0.01;
+  var RATE_GAIN = 1.5;
+  var FRAME_DEFAULT = 1 / 30;
+  var LATENCY_DEFAULT = 0.04;
+  var PRES_FRESH_MS = 600;
+  // Nudge threshold: min(half a frame, 5 ms). A half-frame deadband would let two windows each sit
+  // a half frame off in opposite directions, i.e. one whole frame apart, which is the entire budget.
+  var NUDGE_DEADBAND_MAX = 0.005;
+  var SETTLE_MS = 400;
+  // Re-seek after a landing that is more than this many frames off (plan: 2 frames is the hard
+  // limit; a tighter landing keeps two windows inside one frame of each other across seams).
+  var RECHECK_THRESH = 0.45;
+
+  var sess = null;
+  var gen = 0;
+  var joined = false;
+  var biasMs = 0;
+  var latency = LATENCY_DEFAULT;
+  var frameDur = FRAME_DEFAULT;
+  var lastSeekWall = 0;
+  var seekGen = -1;
+  var seekStartWall = 0;
+  var recheckTimer = null;
+  var recheckBudget = 0;
+  var wrapTimer = null;
+  var tickTimer = null;
+  var stats = { seeks: 0, nudges: 0, joins: 0 };
+  var pres = { mediaTime: NaN, errPres: NaN, wall: 0, wallAtDisplay: 0, count: 0 };
+  var wrapHintMs = 0;
+  var rvfcArmed = false;
+  var desyncAppliedErr = null;
+  var desyncTrace = null;
+  var desyncHookWall = 0;
+
+  function sameSession(a, b) {
+    return !!a && !!b && a.epochMs === b.epochMs && a.sourceRev === b.sourceRev &&
+      a.durationSec === b.durationSec && a.seed === b.seed;
+  }
+
+  function dur() {
+    // Only the shared session duration: never the per-element duration. If the native probe failed
+    // (durationSec 0) the controller adopts ONE reported duration and broadcasts it to every view.
+    return (sess && sess.durationSec > 0) ? sess.durationSec : 0;
+  }
+
+  function targetAt(wallMs) {
+    var d = dur();
+    if (!sess || !(d > 0)) return NaN;
+    var t = ((wallMs - sess.epochMs) / 1000) % d;
+    if (t < 0) t += d;
+    return t;
+  }
+
+  function wrapErr(e, d) {
+    if (!(d > 0) || !isFinite(e)) return e;
+    e = e % d;
+    if (e > d / 2) e -= d;
+    if (e < -d / 2) e += d;
+    return e;
+  }
+
+  // OW_SYNC_TEST: a short ring of media events and play() outcomes, logged with every sample.
+  var evRing = [];
+  function note(what) {
+    if (window.__syncTest !== true) return;
+    evRing.push(Math.round(performance.now()) + ":" + what);
+    if (evRing.length > 14) { evRing.shift(); }
+  }
+
+  function play() {
+    video.muted = true;
+    video.defaultMuted = true;
+    video.playsInline = true;
+    var p = video.play();
+    if (p && typeof p.catch === "function") { p.catch(function (e) { note("play-rejected:" + (e && e.name)); }); }
+  }
+
+  function clearTimers() {
+    if (wrapTimer !== null) { clearTimeout(wrapTimer); wrapTimer = null; }
+    if (recheckTimer !== null) { clearTimeout(recheckTimer); recheckTimer = null; }
+  }
+
+  function setRate(r) {
+    r = Math.min(Math.max(r, 1 - RATE_SPAN), 1 + RATE_SPAN);
+    if (Math.abs(video.playbackRate - r) > 1e-4) { video.playbackRate = r; }
+  }
+
+  // Seek to where the timeline will be once the seek has completed (now + learned latency).
+  // wrapHintMs is the wall time of an imminent wrap: never land before it (a timer that fires a
+  // few ms early must still seek to the start of the clip, not to its last frame).
+  function seekTo(retry) {
+    var d = dur();
+    if (!(d > 0)) return;
+    if (!retry) { recheckBudget = 3; }
+    var t0 = Date.now();
+    var wallT = t0 + biasMs + latency * 1000;
+    if (wrapHintMs && wallT < wrapHintMs) { wallT = wrapHintMs; }
+    wrapHintMs = 0;
+    var t = targetAt(wallT);
+    if (!(t >= 0)) return;
+    // A seek lands on the frame at or before the requested time, up to a frame early. Snap to the
+    // nearest frame boundary (plus a quarter frame so float noise cannot pick the previous frame).
+    var snapped = Math.round(t / frameDur) * frameDur + 0.25 * frameDur;
+    if (snapped < d - 0.5 * frameDur) { t = snapped; }
+    seekGen = gen;
+    seekStartWall = t0;
+    lastSeekWall = t0;
+    stats.seeks += 1;
+    note("seekTo:" + t.toFixed(3));
+    setRate(1);
+    try { video.currentTime = t; } catch (e) {}
+    if (video.ended) {
+      // play() on an ended element restarts at 0 and overrides this seek: wait for it to land.
+      var myGen = gen;
+      video.addEventListener("seeked", function onSeeked() {
+        video.removeEventListener("seeked", onSeeked);
+        if (myGen === gen) { play(); }
+      });
+    } else {
+      play();
+    }
+  }
+
+  // Error of what is on screen against the timeline, in seconds (positive = ahead). The presented
+  // frame (requestVideoFrameCallback) is the truth: WebKit's currentTime can freeze after an
+  // 'ended' while playback continues. currentTime is only the fallback when no fresh presented
+  // frame exists (hidden pages deliver presented frames at a few Hz, so freshness is generous).
+  function measureErr(now) {
+    var d = dur();
+    if (isFinite(pres.errPres) && pres.wall >= lastSeekWall + 30 && now - pres.wall <= PRES_FRESH_MS) {
+      return wrapErr(pres.errPres - biasMs / 1000, d);
+    }
+    if (video.seeking || (pres.count > 0 && now - lastSeekWall < 400)) { return NaN; }
+    return wrapErr(video.currentTime - targetAt(now + biasMs), d);
+  }
+
+  function scheduleWrap() {
+    if (wrapTimer !== null) { clearTimeout(wrapTimer); wrapTimer = null; }
+    var d = dur();
+    if (!sess || !(d > 0)) return;
+    var myGen = gen;
+    var wall = Date.now() + biasMs;
+    var into = (((wall - sess.epochMs) / 1000) % d + d) % d;
+    var untilWrapMs = (d - into) * 1000;
+    var fireIn = untilWrapMs - latency * 1000;
+    if (fireIn < 5) { fireIn += d * 1000; untilWrapMs += d * 1000; }
+    var wrapAt = Date.now() + untilWrapMs;
+    wrapTimer = setTimeout(function () {
+      wrapTimer = null;
+      if (myGen !== gen || !joined) return;
+      wrapHintMs = wrapAt + biasMs;
+      seekTo();
+      scheduleWrap();
+    }, fireIn);
+  }
+
+  function join() {
+    if (!sess || video.readyState < 1) return;
+    if (!(dur() > 0)) return;
+    joined = true;
+    stats.joins += 1;
+    seekTo();
+    scheduleWrap();
+    startTick();
+  }
+
+  function recheck(myGen) {
+    if (myGen !== gen || !joined) return;
+    if (video.seeking) {
+      recheckTimer = setTimeout(function () { recheck(myGen); }, 100);
+      return;
+    }
+    var err = measureErr(Date.now());
+    if (!isFinite(err)) {
+      recheckTimer = setTimeout(function () { recheck(myGen); }, 100);
+      return;
+    }
+    // Learn the seek latency: landing ahead (err > 0) means the lead was too long.
+    latency = Math.min(Math.max(latency - err * 0.8, 0.01), 0.6);
+    // One corrective re-seek when the landing was more than a frame off (the learned latency
+    // above makes the second landing much tighter); rate nudges only take 10 ms per second.
+    if (Math.abs(err) > RECHECK_THRESH * frameDur && recheckBudget > 0) {
+      recheckBudget -= 1;
+      seekTo(true);
+    }
+  }
+
+  function tick() {
+    if (!sess || !joined) return;
+    if (video.error) return;
+    var now = Date.now();
+    if (video.ended && !video.seeking && now - lastSeekWall > SETTLE_MS) { seekTo(); return; }
+    if (video.paused && !video.seeking && !video.ended) { play(); }
+    if (video.seeking || now - lastSeekWall < SETTLE_MS) return;
+    var err = measureErr(now);
+    if (!isFinite(err)) return;
+    var ae = Math.abs(err);
+    if (ae > 2 * frameDur) {
+      seekTo();
+    } else if (ae > Math.min(0.5 * frameDur, NUDGE_DEADBAND_MAX)) {
+      stats.nudges += 1;
+      setRate(1 - Math.min(Math.max(err * RATE_GAIN, -RATE_SPAN), RATE_SPAN));
+    } else {
+      setRate(1);
+    }
+  }
+
+  function startTick() {
+    if (tickTimer !== null) return;
+    tickTimer = setInterval(tick, TICK_MS);
+  }
+
+  // Presented-frame sample: the mediaTime of the frame actually composited, against the target
+  // at its expected display time. Used for the join re-check and for the gate; logged per window.
+  function armRvfc() {
+    if (rvfcArmed || typeof video.requestVideoFrameCallback !== "function") return;
+    rvfcArmed = true;
+    var cb = function (now, md) {
+      var wallNow = Date.now();
+      var disp = (md && isFinite(md.expectedDisplayTime)) ? md.expectedDisplayTime : now;
+      var wallAtDisplay = wallNow - performance.now() + disp;
+      if (isFinite(pres.mediaTime) && md.mediaTime > pres.mediaTime) {
+        var delta = md.mediaTime - pres.mediaTime;
+        var frames = (isFinite(md.presentedFrames) && isFinite(pres.presentedFrames)) ? md.presentedFrames - pres.presentedFrames : 1;
+        var per = frames >= 1 ? delta / frames : delta;
+        if (per > 0.004 && per < 0.2) { frameDur = per; }
+      }
+      pres.presentedFrames = md.presentedFrames;
+      pres.mediaTime = md.mediaTime;
+      pres.wall = wallNow;
+      pres.wallAtDisplay = wallAtDisplay;
+      pres.count += 1;
+      pres.errPres = wrapErr(md.mediaTime - targetAt(wallAtDisplay), dur());
+      if (desyncTrace && wallNow - desyncHookWall <= 1500 && desyncTrace.length < 200) {
+        desyncTrace.push({ dt: wallNow - desyncHookWall, errPres: pres.errPres });
+      }
+      video.requestVideoFrameCallback(cb);
+    };
+    video.requestVideoFrameCallback(cb);
+  }
+
+  function applySession(next) {
+    if (!next || sameSession(sess, next)) return false;
+    sess = {
+      epochMs: next.epochMs, sourceRev: next.sourceRev,
+      durationSec: next.durationSec, seed: next.seed
+    };
+    window.__wallpaperSession = sess;
+    gen += 1;
+    joined = false;
+    clearTimers();
+    pres.mediaTime = NaN;
+    pres.errPres = NaN;
+    if (video.readyState >= 1) { join(); }
+    return true;
+  }
+
+  ["seeking", "seeked", "ended", "pause", "play", "playing", "waiting", "stalled", "emptied", "abort", "error"].forEach(function (n) {
+    video.addEventListener(n, function () { note(n); });
   });
-  v.muted = true;
-  var p = v.play();
-  if (p && p.catch) { p.catch(function(){}); }
-};
+  // Reported to native only (probe-failure path); this window never derives its own duration from it.
+  window.__videoMetaDuration = 0;
+  video.addEventListener("loadedmetadata", function () {
+    window.__videoMetaDuration = (isFinite(video.duration) && video.duration > 0) ? video.duration : 0;
+    armRvfc(); join();
+  });
+  video.addEventListener("playing", function () { if (!joined) join(); });
+  video.addEventListener("ended", function () { if (joined && Date.now() - lastSeekWall > 100) { seekTo(); } });
+  video.addEventListener("seeked", function () {
+    if (seekGen !== gen || !joined) return;
+    var measured = (Date.now() - seekStartWall) / 1000;
+    if (measured > 0.005 && measured < 1) { latency = 0.5 * latency + 0.5 * measured; }
+    if (recheckTimer !== null) { clearTimeout(recheckTimer); }
+    var myGen = gen;
+    recheckTimer = setTimeout(function () { recheckTimer = null; recheck(myGen); }, 250);
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && sess) { join(); }
+  });
+
+  window.__applyWallpaperSession = applySession;
+
+  window.__setWallpaperVideo = function (src, next) {
+    var v = document.getElementById("bg");
+    if (!v) return;
+    // Session and source change in this one call so no window plays the new file on the old epoch.
+    // Source first: load() resets readyState, so applySession cannot join the outgoing file.
+    while (v.firstChild) { v.removeChild(v.firstChild); }
+    v.removeAttribute("src");
+    v.src = src;
+    window.__lastVideoApplied = { src: '', durationMs: 0 };
+    window.__videoMetaDuration = 0;
+    v.load();
+    v.addEventListener('loadedmetadata', function onMeta() {
+      v.removeEventListener('loadedmetadata', onMeta);
+      window.__lastVideoApplied = { src: v.currentSrc, durationMs: Math.round((v.duration || 0) * 1000) };
+    });
+    v.muted = true;
+    if (next) { applySession(next); } else { gen += 1; joined = false; clearTimers(); }
+  };
+
+  window.__syncSample = function () {
+    var now = Date.now();
+    var d = dur();
+    var ct = video.currentTime;
+    var presAge = pres.wall ? now - pres.wall : -1;
+    return {
+      rev: sess ? sess.sourceRev : -1,
+      epochMs: sess ? sess.epochMs : 0,
+      durationSec: d,
+      now: now,
+      mediaTime: isFinite(pres.mediaTime) ? pres.mediaTime : null,
+      presAgeMs: presAge,
+      presWall: pres.wallAtDisplay,
+      vis: document.visibilityState,
+      currentTime: ct,
+      errCur: sess ? wrapErr(ct - targetAt(now), d) : null,
+      errPres: isFinite(pres.errPres) ? pres.errPres : null,
+      rate: video.playbackRate,
+      paused: video.paused,
+      seeking: video.seeking,
+      ended: video.ended,
+      readyState: video.readyState,
+      frameDur: frameDur,
+      joined: joined,
+      seeks: stats.seeks,
+      nudges: stats.nudges,
+      latency: latency,
+      biasMs: biasMs,
+      desyncAppliedErr: desyncAppliedErr,
+      desyncTrace: (desyncTrace && now - desyncHookWall <= 3000) ? desyncTrace : null,
+      sinceSeekMs: lastSeekWall ? now - lastSeekWall : -1,
+      ev: evRing
+    };
+  };
+
+  if (window.__syncTest === true) {
+    window.__syncTestDesync = function (ms) {
+      var d = dur();
+      if (!(d > 0)) return;
+      var t = (video.currentTime + ms / 1000) % d;
+      if (t < 0) t += d;
+      video.currentTime = t;
+      // Self-reported error (informational only: the retire routing check reads it).
+      desyncAppliedErr = wrapErr(video.currentTime - targetAt(Date.now()), d);
+      // The controller can correct the offset within one 250 ms tick, faster than the native 250 ms
+      // sampler sees it, and occluded pages get only 1 Hz timers. So every presented frame (the
+      // requestVideoFrameCallback below) is recorded for 1.5 s after the hook: the harness then
+      // asserts on the presented-frame error, never on the self-report above.
+      desyncHookWall = Date.now();
+      desyncTrace = [];
+    };
+    window.__syncTestBias = function (ms) {
+      biasMs = ms;
+      if (joined) { seekTo(); scheduleWrap(); }
+    };
+  }
+
+  armRvfc();
+  applySession(window.__wallpaperSession);
+})();
 
 (function () {
   "use strict";
 
+  // ow-blz.6: lightning is a stateless pure function of (seed, Date.now()). Every window computes
+  // the same event record from the shared session seed, so a strike lands on all displays at the
+  // same wall-clock instant and at the same point of the union stage. No Math.random and no rAF
+  // timestamp on the scheduling or envelope path; rAF only decides when the result is drawn.
   var FLICKER_MIN        = 2;
   var FLICKER_MAX        = 4;
   var FLASH_RISE_MS      = 20;
@@ -312,68 +675,103 @@ window.__setWallpaperVideo = function(src) {
   var FLASH_COLOR        = [205, 225, 255];
   var INTER_FLICKER_MIN  = 40;
   var INTER_FLICKER_MAX  = 110;
-  var PROD_INTERVAL_MIN  = 15000;
-  var PROD_INTERVAL_MAX  = 60000;
-  var TEST_INTERVAL_MIN  = 2000;
-  var TEST_INTERVAL_MAX  = 4000;
-
-  function rnd(lo, hi) { return lo + Math.random() * (hi - lo); }
-  function rndInt(lo, hi) { return Math.floor(rnd(lo, hi + 1)); }
+  // One burst per slot at a hashed offset in [0, OFFSET_SPAN]. Consecutive bursts are then
+  // SLOT - OFFSET_SPAN .. SLOT + OFFSET_SPAN apart: production 15 to 60 s, test 2 to 4 s.
+  var PROD_SLOT_MS       = 37500;
+  var PROD_OFFSET_SPAN   = 22500;
+  var TEST_SLOT_MS       = 3000;
+  var TEST_OFFSET_SPAN   = 1000;
+  var EVENT_LOG_MAX      = 64;
 
   var R = FLASH_COLOR[0];
   var G = FLASH_COLOR[1];
   var B = FLASH_COLOR[2];
 
+  var _k = 3.5 / FLASH_DECAY_MS;
   var _wgtStats = null;
 
-  var _phase        = 'idle';
-  var _nextBurstAt  = 0;
-  var _nextFlickerAt = 0;
-  var _decayStart   = 0;
-  var _decayEnd     = 0;
-  var _flickersLeft = 0;
-  var _ox           = 0;
-  var _oy           = 0;
-  var _peakAlpha    = 0;
-  var _riseEnd      = 0;
-  var _k            = 3.5 / FLASH_DECAY_MS;
-
-  function scheduleBurst(ts) {
-    _phase = 'idle';
-    var iMin = (window.__wgtTest === true) ? TEST_INTERVAL_MIN : PROD_INTERVAL_MIN;
-    var iMax = (window.__wgtTest === true) ? TEST_INTERVAL_MAX : PROD_INTERVAL_MAX;
-    _nextBurstAt = ts + rnd(iMin, iMax);
+  function mulberry32(a) {
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 
-  function startBurst(w, h, ts) {
-    _ox           = rnd(0, w);
-    _oy           = rnd(0, h * 0.4);
-    _peakAlpha    = rnd(PEAK_ALPHA_MIN, PEAK_ALPHA_MAX);
-    _flickersLeft = rndInt(FLICKER_MIN, FLICKER_MAX);
-    startFlicker(ts);
+  function slotRng(seed, slot) {
+    var s = (Math.imul((seed >>> 0) ^ 0x9E3779B9, 0x85EBCA6B) ^ Math.imul(slot >>> 0, 0xC2B2AE35)) >>> 0;
+    var r = mulberry32(s);
+    r(); r();
+    return r;
   }
 
-  function startFlicker(ts) {
-    _phase    = 'rise';
-    _riseEnd  = ts + FLASH_RISE_MS;
-    _decayStart = _riseEnd;
-    _decayEnd   = _decayStart + FLASH_DECAY_MS;
+  function lerp(lo, hi, u) { return lo + u * (hi - lo); }
+  function round2(x) { return Math.round(x * 100) / 100; }
+  function round4(x) { return Math.round(x * 10000) / 10000; }
+
+  function slotConfig(test) {
+    return test ? { slot: TEST_SLOT_MS, span: TEST_OFFSET_SPAN } : { slot: PROD_SLOT_MS, span: PROD_OFFSET_SPAN };
   }
 
-  function drawFlash(ctx, w, h, a) {
+  // The burst of one slot. Origin is in UNION STAGE POINTS (stageW x stageH), never in pixels.
+  function lightningEvent(seed, slotIdx, stageW, stageH, test) {
+    var cfg = slotConfig(test);
+    var r = slotRng(seed, slotIdx);
+    var start = slotIdx * cfg.slot + Math.round(r() * cfg.span);
+    var ox = round2(r() * stageW);
+    var oy = round2(r() * stageH * 0.4);
+    var peak = round4(lerp(PEAK_ALPHA_MIN, PEAK_ALPHA_MAX, r()));
+    var n = FLICKER_MIN + Math.floor(r() * (FLICKER_MAX - FLICKER_MIN + 1));
+    var flickers = [];
+    var t = 0;
+    for (var i = 0; i < n; i++) {
+      flickers.push(t);
+      t += FLASH_RISE_MS + FLASH_DECAY_MS;
+      if (i < n - 1) { t += Math.round(lerp(INTER_FLICKER_MIN, INTER_FLICKER_MAX, r())); }
+    }
+    return { id: slotIdx, start: start, ox: ox, oy: oy, peak: peak, flickers: flickers, end: start + t };
+  }
+
+  function flashAlpha(elapsedMs, peak) {
+    if (elapsedMs < 0) return 0;
+    if (elapsedMs < FLASH_RISE_MS) return peak * (elapsedMs / FLASH_RISE_MS);
+    var decayElapsed = elapsedMs - FLASH_RISE_MS;
+    if (decayElapsed >= FLASH_DECAY_MS) return 0;
+    return peak * Math.exp(-_k * decayElapsed);
+  }
+
+  function eventAlpha(ev, nowMs) {
+    var el = nowMs - ev.start;
+    if (el < 0) return 0;
+    for (var i = 0; i < ev.flickers.length; i++) {
+      var d = el - ev.flickers[i];
+      if (d >= 0 && d < FLASH_RISE_MS + FLASH_DECAY_MS) { return flashAlpha(d, ev.peak); }
+    }
+    return 0;
+  }
+
+  // Pure: same inputs, same output, on every window. A burst always ends before its slot does.
+  function lightningAt(seed, nowMs, stageW, stageH, test) {
+    var cfg = slotConfig(test);
+    var ev = lightningEvent(seed, Math.floor(nowMs / cfg.slot), stageW, stageH, test);
+    return { event: ev, alpha: eventAlpha(ev, nowMs) };
+  }
+
+  function drawFlash(ctx, w, h, a, ox, oy) {
     ctx.globalCompositeOperation = 'lighter';
 
     var primaryRadius = GLOW_RADIUS_FRAC * w;
-    var grad = ctx.createRadialGradient(_ox, _oy, 0, _ox, _oy, primaryRadius);
+    var grad = ctx.createRadialGradient(ox, oy, 0, ox, oy, primaryRadius);
     grad.addColorStop(0, 'rgba(' + R + ',' + G + ',' + B + ',' + a + ')');
     grad.addColorStop(1, 'rgba(' + R + ',' + G + ',' + B + ',0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.arc(_ox, _oy, primaryRadius, 0, Math.PI * 2);
+    ctx.arc(ox, oy, primaryRadius, 0, Math.PI * 2);
     ctx.fill();
 
-    var ox2 = _ox - 0.07 * w;
-    var oy2 = _oy + 0.04 * h;
+    var ox2 = ox - 0.07 * w;
+    var oy2 = oy + 0.04 * h;
     var r2  = 0.55 * primaryRadius;
     var a2  = a * 0.6;
     var grad2 = ctx.createRadialGradient(ox2, oy2, 0, ox2, oy2, r2);
@@ -389,8 +787,7 @@ window.__setWallpaperVideo = function(src) {
     ctx.fillRect(0, 0, w, h);
 
     ctx.globalCompositeOperation = 'source-over';
-    if (!window.__wgtStats) window.__wgtStats = { maxRenderedAlpha: 0, maxAlpha: 0, idleAlpha: 0, postFlashIdleAlpha: -1 };
-    _wgtStats = window.__wgtStats;
+    ensureStats();
     var drawnA = Math.round(a * 255);
     if (drawnA > (_wgtStats.maxAlpha || 0)) { _wgtStats.maxAlpha = drawnA; }
     if (window.__wgtTest === true) {
@@ -403,75 +800,89 @@ window.__setWallpaperVideo = function(src) {
     }
   }
 
-  function frame(ctx, w, h, ts) {
-    if (_phase === 'idle') {
-      if (!window.__wgtStats) window.__wgtStats = { maxRenderedAlpha: 0, maxAlpha: 0, idleAlpha: 0, postFlashIdleAlpha: -1 };
-      _wgtStats = window.__wgtStats;
-      if (!_wgtStats._idleSampled) {
+  function ensureStats() {
+    if (!window.__wgtStats) window.__wgtStats = { maxRenderedAlpha: 0, maxAlpha: 0, idleAlpha: 0, postFlashIdleAlpha: -1 };
+    _wgtStats = window.__wgtStats;
+  }
+
+  // Event records the window actually drew (OW_SYNC_TEST compares them across windows).
+  var _eventLog = [];
+  var _eventSeen = {};
+  function logEvent(ev, nowMs) {
+    if (_eventSeen[ev.id]) return;
+    _eventSeen[ev.id] = true;
+    _eventLog.push({ event: ev, firstDrawnAt: nowMs });
+    if (_eventLog.length > EVENT_LOG_MAX) { _eventLog.shift(); }
+  }
+  window.__syncEvents = function () { return { events: _eventLog, pixel: window.__wgtLastFlashPixel || null }; };
+
+  function stageDims(w, h) {
+    var wp = window.__wallpaper;
+    if (wp && isFinite(wp.stageW) && isFinite(wp.stageH) && wp.stageW > 0 && wp.stageH > 0) {
+      return { w: wp.stageW, h: wp.stageH };
+    }
+    var d = (window.__overlayStats && window.__overlayStats.sized && window.__overlayStats.sized.dpr) || window.devicePixelRatio || 1;
+    return { w: w / d, h: h / d };
+  }
+
+  // OW_SYNC_TEST falsifiability hook: this window computes its schedule `delay` ms late, so its
+  // strikes are drawn late while firstDrawnAt still records the real wall clock.
+  var _testDelayMs = 0;
+  if (window.__syncTest === true) {
+    window.__syncTestLightningDelay = function (ms) { _testDelayMs = ms; };
+    // Falsifiability hook: this window alone draws ONE extra independent strike, `ms` from now.
+    window.__syncTestExtraStrike = function (ms) {
+      var t = Date.now() + ms;
+      _testExtra = { id: 'extra-' + t, start: t, end: t + 400, ox: 100, oy: 100, peak: 0.6, flickers: [0] };
+    };
+  }
+  var _testExtra = null;
+
+  function frame(ctx, w, h) {
+    var now = Date.now();
+    var sess = window.__wallpaperSession;
+    var seed = (sess && isFinite(sess.seed)) ? sess.seed : 0;
+    var sd = stageDims(w, h);
+    if (_testExtra && now >= _testExtra.start && now <= _testExtra.end) {
+      drawFlash(ctx, w, h, 0.6, _testExtra.ox * (w / sd.w), _testExtra.oy * (h / sd.h));
+      logEvent(_testExtra, now);
+      return;
+    }
+    var res = lightningAt(seed, now - _testDelayMs, sd.w, sd.h, window.__wgtTest === true);
+
+    if (res.alpha > 0) {
+      var ev = res.event;
+      // Stage points to backing pixels, at draw time only.
+      var ox = ev.ox * (w / sd.w);
+      var oy = ev.oy * (h / sd.h);
+      drawFlash(ctx, w, h, res.alpha, ox, oy);
+      logEvent(ev, now);
+      if (window.__syncTest === true) {
         try {
-          _wgtStats.idleAlpha = ctx.getImageData(0, 0, 1, 1).data[3];
-          _wgtStats._idleSampled = true;
+          var pxA = ctx.getImageData(Math.min(Math.max(Math.round(ox), 0), w - 1), Math.min(Math.max(Math.round(oy), 0), h - 1), 1, 1).data[3];
+          window.__wgtLastFlashPixel = { id: ev.id, alpha: res.alpha, pixelAlpha: pxA, at: now };
         } catch (e) {}
       }
-      if ((_wgtStats.maxRenderedAlpha || 0) > 0 && !_wgtStats._postFlashIdleSampled) {
-        try {
-          _wgtStats.postFlashIdleAlpha = ctx.getImageData(0, 0, 1, 1).data[3];
-          _wgtStats._postFlashIdleSampled = true;
-        } catch (e) {}
-      }
-      if (ts >= _nextBurstAt) { startBurst(w, h, ts); }
       return;
     }
 
-    if (_phase === 'gap') {
-      if (ts >= _nextFlickerAt) {
-        startFlicker(ts);
-      }
-      return;
+    ensureStats();
+    if (!_wgtStats._idleSampled) {
+      try {
+        _wgtStats.idleAlpha = ctx.getImageData(0, 0, 1, 1).data[3];
+        _wgtStats._idleSampled = true;
+      } catch (e) {}
     }
-
-    if (_phase === 'rise') {
-      var risePhase = Math.min((ts - (_riseEnd - FLASH_RISE_MS)) / FLASH_RISE_MS, 1);
-      var a = _peakAlpha * risePhase;
-      drawFlash(ctx, w, h, a);
-      if (ts >= _riseEnd) {
-        _phase = 'decay';
-      }
-      return;
-    }
-
-    if (_phase === 'decay') {
-      if (ts >= _decayEnd) {
-        _flickersLeft -= 1;
-        if (!window.__wgtStats) window.__wgtStats = { maxRenderedAlpha: 0, maxAlpha: 0, idleAlpha: 0, postFlashIdleAlpha: -1 };
-        _wgtStats = window.__wgtStats;
-        if ((_wgtStats.maxRenderedAlpha || 0) > 0 && !_wgtStats._postFlashIdleSampled) {
-          _wgtStats.postFlashIdleAlpha = 0;
-          _wgtStats._postFlashIdleSampled = true;
-        }
-        if (_flickersLeft <= 0) {
-          scheduleBurst(ts);
-        } else {
-          _phase         = 'gap';
-          _nextFlickerAt = ts + rnd(INTER_FLICKER_MIN, INTER_FLICKER_MAX);
-        }
-        return;
-      }
-      var decayPhase = ts - _decayStart;
-      var ad = _peakAlpha * Math.exp(-_k * decayPhase);
-      drawFlash(ctx, w, h, ad);
-      return;
+    if ((_wgtStats.maxRenderedAlpha || 0) > 0 && !_wgtStats._postFlashIdleSampled) {
+      try {
+        _wgtStats.postFlashIdleAlpha = ctx.getImageData(0, 0, 1, 1).data[3];
+        _wgtStats._postFlashIdleSampled = true;
+      } catch (e) {}
     }
   }
 
-  function init(ctx, w, h, dpr) {
-    scheduleBurst(performance.now());
-    if (window.__wgtTest === true) {
-      _nextBurstAt = performance.now() + 200;
-    }
-  }
-
-  function resize(w, h, dpr) {}
+  function init() {}
+  function resize() {}
 
   var lightningEffect = {
     frame: frame,
@@ -479,13 +890,9 @@ window.__setWallpaperVideo = function(src) {
     resize: resize
   };
 
-  window.__wgtFlashAlpha = function(elapsedMs, peak) {
-    if (elapsedMs < 0) return 0;
-    if (elapsedMs < FLASH_RISE_MS) return peak * (elapsedMs / FLASH_RISE_MS);
-    var decayElapsed = elapsedMs - FLASH_RISE_MS;
-    if (decayElapsed >= FLASH_DECAY_MS) return 0;
-    return peak * Math.exp(-_k * decayElapsed);
-  };
+  window.__wgtFlashAlpha = flashAlpha;
+  window.__wgtLightningAt = lightningAt;
+  window.__wgtLightningEvent = lightningEvent;
 
   var _stormRegistered = false;
   var _reducedMotion = false;

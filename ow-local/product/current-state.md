@@ -42,7 +42,7 @@ Last updated: 2026-10-07
   ow-aqx.4. The env-gated webspike is kept as the A/B (retirement deferred).
 - ow-94b.2 (done): the real looping-video web page (index.html + style.css +
   wallpaper.js) replaces the stub. A looping muted video fills the window
-  (object-fit: cover), starts on its own (autoplay + synchronous play() kick), with a
+  (object-fit: cover), starts on its own (autoplay + synchronous play() kick; superseded by ow-blz.5: no autoplay/loop, the sync controller owns play and the wrap), with a
   black fallback and the validated brightness(1.01) filter. An overlay canvas is in
   the DOM but inert (Epic D). WebWallpaperView logs a native WKMediaPlaybackState
   sample at +1.0/+2.5/+7.5s; verified media=playing early (autostart) AND at the late
@@ -53,8 +53,8 @@ Last updated: 2026-10-07
 
 ### Not Done
 - A real sample `bg.mp4` in `web/assets/` (ow-94b.4; a generated test clip is used now).
-- Geometry unit tests (ow-blz.4); slice sync across pause/resume (ow-blz.5); retiring
-  the webspike (deferred).
+- Geometry unit tests (ow-blz.4); retiring the webspike (deferred). (Cross-display
+  sync, ow-blz.5, is done; see below.)
 
 ### Also de-risked
 - ow-94b.5 (done): a looping `<video>` in a transparent WKWebView at the desktop
@@ -196,6 +196,19 @@ Last updated: 2026-10-07
   `Contents/Resources`. Outputs `dist/OnlyWallpapers-<version>.zip`, an identical
   `dist/OnlyWallpapers.zip` (for the stable `releases/latest/download/` URL), and
   `.sha256` files. Gate: `scripts/package-check.sh`.
+
+- ow-blz.5 + ow-blz.6 (done, 2026-10-18): cross-display sync. The user saw three
+  displays playing three timestamps of the same video (in-video lightning split across
+  screens). Now WallpaperController owns one playback session (`VideoSession.swift`:
+  epochMs wall clock, sourceRev, durationSec probed once natively, seed) injected at
+  document start and atomically with src on Choose video. The `<video>` has no
+  autoplay/loop; a JS controller targets ((Date.now() - epochMs) mod duration), measures
+  the presented frame via requestVideoFrameCallback, seeks on join and beyond 2 frames,
+  nudges playbackRate within [0.99, 1.01], and owns the wrap. Storm lightning is a
+  stateless pure function of (seed, Date.now()) with its origin in union stage points,
+  so one strike lands on every display at once. Gate `scripts/sync-check.sh`: measured
+  steady-state max pairwise offset about 15 to 18 ms (bar 33 ms) under real load.
+  Physical Space pause/resume is a Phase 5 manual check.
 
 ### Next Step
 Publish v0.1.0 on GitHub Releases (ow-t4r.5, needs the user's explicit go-ahead) and

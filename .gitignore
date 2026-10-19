@@ -28,3 +28,6 @@ dist/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Python bytecode
+__pycache__/

@@ -32,7 +32,7 @@ rendering.
    blocks the first launch. Either:
    - open System Settings > Privacy & Security, scroll down, and click "Open Anyway"
      next to the OnlyWallpapers message, then confirm; or
-   - run this once in Terminal:
+   - or, before opening it the first time, run this once in Terminal:
      ```bash
      xattr -dr com.apple.quarantine /Applications/OnlyWallpapers.app
      ```

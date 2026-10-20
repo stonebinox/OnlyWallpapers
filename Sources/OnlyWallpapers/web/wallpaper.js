@@ -291,43 +291,126 @@
   var video = document.getElementById("bg");
   if (!video) return;
 
-  // ow-blz.5: the sync controller is the ONLY caller of play() and the only author of the wrap.
-  // The <video> has no autoplay and no loop. Target time is a pure function of the wall clock
-  // and the native session tuple (epochMs, sourceRev, durationSec, seed).
+  // ow-blz.5 / ow-blz.8: the sync controller is the ONLY caller of play() and the only author of
+  // the wrap. The <video> has no autoplay and no loop. Target time is a pure function of the wall
+  // clock and the native session tuple (epochMs, sourceRev, durationSec, seed).
+  //
+  // ow-blz.8 design (replaces the ow-blz.5 loop, whose seek every tick and rate nudges starved a 4K60
+  // decoder: ~95 seeks/min, presented error p50 200 ms). All control is in milliseconds and every
+  // number below was sized from measurements on a 4K60 H.264 clip (1 s GOP, 40 Mbit/s), two displays:
+  //   - playbackRate is EXACTLY 1.0, always. A rate change of ANY size (1.0 to 1.005, back to 1.0,
+  //     1.02) makes the presented timeline lose 105 to 170 ms at the instant of the change, so a
+  //     pulse costs far more than the drift it would remove. Natural drift at rate 1.0 is zero
+  //     (the error is constant for a whole loop), so nothing needs chasing.
+  //   - Alignment comes from seeks, which are rare events: join, wrap, and a persistent error. One
+  //     seek in flight per window (token). A seek lands with error = lead used minus what the seek
+  //     cost; the first seek of an event aims where the learned lead says (it only shortens the
+  //     visible freeze), a landing re-seek aims at the present, which on a decoder that has just
+  //     produced those frames completes in a few ms and lands within a few ms of the timeline.
+  //   - Control error is the median of recent presented frames (requestVideoFrameCallback) that are
+  //     newer than the last seek and younger than ERR_FRESH_MS; otherwise the tick is skipped.
+  //   - Clips with an audio track make every seek slow (150 to 450 ms, +-90) and no WebKit control
+  //     reaches better than that; there the tolerance follows the observed landing error and only
+  //     gross errors get a (rare, backed-off) corrective seek instead of a storm. Stripping the audio
+  //     track (the video is never audible here) makes seeks fast and sync tight again.
   var TICK_MS = 250;
-  var RATE_SPAN = 0.01;
-  var RATE_GAIN = 1.5;
-  var FRAME_DEFAULT = 1 / 30;
-  var LATENCY_DEFAULT = 0.04;
-  var PRES_FRESH_MS = 600;
-  // Nudge threshold: min(half a frame, 5 ms). A half-frame deadband would let two windows each sit
-  // a half frame off in opposite directions, i.e. one whole frame apart, which is the entire budget.
-  var NUDGE_DEADBAND_MAX = 0.005;
-  var SETTLE_MS = 400;
-  // Re-seek after a landing that is more than this many frames off (plan: 2 frames is the hard
-  // limit; a tighter landing keeps two windows inside one frame of each other across seams).
-  var RECHECK_THRESH = 0.45;
+  // A frame older than this at tick time means the window is not presenting (hidden or stalled).
+  var ERR_FRESH_MS = 60;
+  // Errors are taken as the median of the frames of the last ERR_WINDOW_MS (at least ERR_MIN_N).
+  var ERR_WINDOW_MS = 200;
+  var ERR_MIN_N = 3;
+  // Sized from the ow-blz.8 idle baseline: presented-frame jitter at rate 1.0 is about 2 ms
+  // peak to peak and a seek lands on a frame boundary, so the landing error is spread over one
+  // frame period T (measured +0.7, +9, +23 ms at 60 fps). A window within the tolerance is as
+  // good as a seek can make it: TOL = max(TOL_MIN_MS, 0.6 T), i.e. 12 ms at 60 fps and 20 ms
+  // at 30 fps. Past it a landing is re-seeked and a persistent error gets a corrective seek.
+  // T is only an estimate used to size this tolerance (never to snap a seek or chase drift).
+  var TOL_MIN_MS = 12;
+  var TOL_FRAC = 0.6;
+  var FRAME_DEFAULT_MS = 1000 / 30;
+  var FRAME_SAMPLES = 40;
+  // A gross error is corrected at once; a moderate one must persist for CORR_TICKS ticks.
+  var GROSS_ERR_MS = 200;
+  var SEEK_COST_EVENTS = 7;
+  var SLOW_MIN_EVENTS = 4;
+  // On a clip whose seeks are slow and uneven (see slowRegime) the controller only corrects errors
+  // beyond SLOW_GROSS_MS and far less often (SLOW_COOLDOWN_MS).
+  var SLOW_SEEK_MS = 120;
+  var SLOW_GROSS_MS = 450;
+  var SLOW_COOLDOWN_MS = 30000;
+  var CORR_TICKS = 2;
+  var COOLDOWN_MIN_MS = 5000;
+  var TOKEN_TIMEOUT_MS = 1500;
+  var LEAD_DEFAULT = 0;
+  var LEAD_HISTORY = 5;
+  // Landing re-seeks per event (join, wrap or corrective): at most 2 after the first seek, 3 seeks in
+  // all. The re-seek aimed at the present is fast and precise (Step 0), a third is never needed.
+  var JOIN_RETRIES = 2;
+  var RETRIES = 2;
+  // A native seek whose 'seeked' never arrives is given up on after this long, so one lost event
+  // cannot wedge the controller. Until then no new currentTime assignment is made.
+  var NATIVE_ABANDON_MS = 5000;
+  var FRAME_MIN_S = 1 / 120;
+  var FRAME_MAX_S = 1 / 15;
+  var FRAME_QUIET_MS = 1000;
+  var VIS_DEBOUNCE_MS = 1000;
+  var STALL_MS = 100;
+  var LAND_FRAMES = 2;
 
   var sess = null;
   var gen = 0;
   var joined = false;
   var biasMs = 0;
-  var latency = LATENCY_DEFAULT;
-  var frameDur = FRAME_DEFAULT;
+  // Learned seek lead in seconds (time from issuing a seek to the first playing frame). Seeks to a
+  // keyframe (wrap, t = 0) are much cheaper than mid-GOP seeks, so they learn separately.
+  var lead = { seek: LEAD_DEFAULT, wrap: LEAD_DEFAULT };
+  var leadObs = { seek: [], wrap: [] };
+  var seekLatency = 0.3;
+  var tok = null;
+  var tokId = 0;
+  // Id and issue time of the one native seek (currentTime assignment) not yet answered by 'seeked'
+  // (0 = none). While set, every other seek request is coalesced into `pending`.
+  var nativeId = 0;
+  var nativeWall = 0;
+  var pending = null;
+  // Request id the current post-seek frames belong to.
+  var postReq = 0;
+  var lastCorrSeekWall = 0;
+  // Grows while corrective seeks keep landing outside the tolerance, so a clip the decoder cannot
+  // seek accurately gets rarer and rarer corrective seeks instead of a storm.
+  var corrBackoff = 1;
   var lastSeekWall = 0;
-  var seekGen = -1;
-  var seekStartWall = 0;
-  var recheckTimer = null;
-  var recheckBudget = 0;
+  var lastSeekT = NaN;
+  var postSeekOk = false;
+  var postFrames = 0;
+  var errRing = [];
+  var frameDeltas = [];
+  var seekCosts = [];
+  var wrapHintMs = 0;
   var wrapTimer = null;
   var tickTimer = null;
-  var stats = { seeks: 0, nudges: 0, joins: 0 };
-  var pres = { mediaTime: NaN, errPres: NaN, wall: 0, wallAtDisplay: 0, count: 0 };
-  var wrapHintMs = 0;
+  var badTicks = 0;
+  var visTimer = null;
   var rvfcArmed = false;
+  var lastPauseWall = 0;
+  // Wall time the page last became visible (0 = visible since load, Infinity = hidden now).
+  var visibleSince = document.visibilityState === "visible" ? 0 : Infinity;
+  var lastCbWall = 0;
+  var jwStart = 0;
+  var jwUntil = 0;
+  var jwKind = "";
+  var stats = {
+    seeks: 0, joinSeeks: 0, wrapSeeks: 0, corrSeeks: 0, joins: 0, seekTimeouts: 0, seekQueued: 0, seekAbandoned: 0,
+    stallsOut: 0, maxGapOut: 0, seamGapMax: 0, joinGapMax: 0, corrGapMax: 0
+  };
+  var pres = { mediaTime: NaN, errPres: NaN, wall: 0, wallAtDisplay: 0, count: 0, presentedFrames: NaN };
   var desyncAppliedErr = null;
   var desyncTrace = null;
   var desyncHookWall = 0;
+  // OW_SYNC_TEST modes (set by native at document start): idle = join once and never correct
+  // (baseline), storm = one seek per tick (the ow-blz.5 behaviour, for the falsifiability run).
+  var idle = window.__syncIdle === true;
+  var storm = window.__syncStorm === true;
 
   function sameSession(a, b) {
     return !!a && !!b && a.epochMs === b.epochMs && a.sourceRev === b.sourceRev &&
@@ -372,63 +455,146 @@
     if (p && typeof p.catch === "function") { p.catch(function (e) { note("play-rejected:" + (e && e.name)); }); }
   }
 
+  function clearTok() {
+    if (tok && tok.timer !== null) { clearTimeout(tok.timer); }
+    tok = null;
+  }
+
   function clearTimers() {
+    pending = null;
     if (wrapTimer !== null) { clearTimeout(wrapTimer); wrapTimer = null; }
-    if (recheckTimer !== null) { clearTimeout(recheckTimer); recheckTimer = null; }
+    if (visTimer !== null) { clearTimeout(visTimer); visTimer = null; }
+    clearTok();
   }
 
-  function setRate(r) {
-    r = Math.min(Math.max(r, 1 - RATE_SPAN), 1 + RATE_SPAN);
-    if (Math.abs(video.playbackRate - r) > 1e-4) { video.playbackRate = r; }
+  // Forget everything learned about the previous session or source (lead, seek costs, frame
+  // period, cooldown, correction backoff): none of it applies to a different clip or epoch.
+  function resetLearned() {
+    lead = { seek: LEAD_DEFAULT, wrap: LEAD_DEFAULT };
+    leadObs = { seek: [], wrap: [] };
+    seekLatency = 0.3;
+    seekCosts = [];
+    frameDeltas = [];
+    lastCorrSeekWall = 0;
+    corrBackoff = 1;
+    badTicks = 0;
+    wrapHintMs = 0;
+    pending = null;
   }
 
-  // Seek to where the timeline will be once the seek has completed (now + learned latency).
-  // wrapHintMs is the wall time of an imminent wrap: never land before it (a timer that fires a
-  // few ms early must still seek to the start of the clip, not to its last frame).
-  function seekTo(retry) {
+  // True while a native seek has been assigned and 'seeked' has not answered it (or it was given up
+  // on after NATIVE_ABANDON_MS).
+  function nativeInFlight(now) {
+    if (nativeId !== 0 && now - nativeWall > NATIVE_ABANDON_MS) { nativeId = 0; stats.seekAbandoned += 1; }
+    return nativeId !== 0;
+  }
+
+  var KIND_PRIO = { corr: 1, join: 2, wrap: 3 };
+
+  // Issue the coalesced request once the native seek has finished.
+  function flushPending() {
+    if (!pending || nativeInFlight(Date.now())) return;
+    var p = pending;
+    pending = null;
+    seek(p.kind, p.retries, p.isRetry, p.retryLead);
+  }
+
+  // Issue one accurate seek to where the timeline will be once playback resumes (now + lead).
+  // kind: "join" | "wrap" | "corr". wrapHintMs is the wall time of an imminent wrap: never land
+  // before it (a timer that fires a few ms early must still seek to the start of the clip).
+  // Never assigns currentTime while a previous assignment is unanswered: the request is coalesced
+  // (highest priority kind wins, later wins a tie) and issued when 'seeked' arrives. force is only
+  // for the storm test hook, which reproduces the old behaviour.
+  function seek(kind, retries, isRetry, retryLead, force) {
     var d = dur();
-    if (!(d > 0)) return;
-    if (!retry) { recheckBudget = 3; }
+    if (!(d > 0)) return false;
+    if (!force && nativeInFlight(Date.now())) {
+      if (!pending || KIND_PRIO[kind] >= KIND_PRIO[pending.kind]) {
+        pending = { kind: kind, retries: retries, isRetry: isRetry, retryLead: retryLead };
+      }
+      stats.seekQueued += 1;
+      return false;
+    }
+    pending = null;
+    clearTok();
     var t0 = Date.now();
-    var wallT = t0 + biasMs + latency * 1000;
+    // A landing re-seek is aimed at the present (lead 0): it targets frames the decoder just
+    // produced, so it completes in a few ms and lands within a few ms of the timeline.
+    var ld = isRetry ? retryLead : (kind === "wrap" ? lead.wrap : lead.seek);
+    var wallT = t0 + biasMs + ld * 1000;
     if (wrapHintMs && wallT < wrapHintMs) { wallT = wrapHintMs; }
     wrapHintMs = 0;
     var t = targetAt(wallT);
-    if (!(t >= 0)) return;
-    // A seek lands on the frame at or before the requested time, up to a frame early. Snap to the
-    // nearest frame boundary (plus a quarter frame so float noise cannot pick the previous frame).
-    var snapped = Math.round(t / frameDur) * frameDur + 0.25 * frameDur;
-    if (snapped < d - 0.5 * frameDur) { t = snapped; }
-    seekGen = gen;
-    seekStartWall = t0;
+    if (!(t >= 0)) return false;
+    var id = ++tokId;
+    nativeId = id;
+    nativeWall = t0;
+    tok = {
+      id: id, kind: kind, t0: t0, t: t, leadUsed: ld, isRetry: !!isRetry, retries: retries || 0, seeked: false, seekedWall: 0,
+      wasEnded: video.ended, timer: null
+    };
+    tok.timer = setTimeout(function () {
+      if (tok && tok.id === id) { tok = null; stats.seekTimeouts += 1; jwUntil = Date.now() + 500; }
+    }, TOKEN_TIMEOUT_MS);
     lastSeekWall = t0;
+    lastSeekT = t;
+    postSeekOk = false;
+    postFrames = 0;
+    errRing = [];
+    badTicks = 0;
     stats.seeks += 1;
-    note("seekTo:" + t.toFixed(3));
-    setRate(1);
+    // Every seek counts under the kind of the event that caused it, landing re-seeks included, so
+    // join + wrap + corrective always equals the total.
+    if (kind === "wrap") { stats.wrapSeeks += 1; } else if (kind === "join") { stats.joinSeeks += 1; } else { stats.corrSeeks += 1; }
+    if (kind === "corr") { lastCorrSeekWall = t0; }
+    jwStart = t0;
+    jwUntil = Infinity;
+    jwKind = kind;
+    note("seek:" + kind + ":" + t.toFixed(3));
     try { video.currentTime = t; } catch (e) {}
-    if (video.ended) {
-      // play() on an ended element restarts at 0 and overrides this seek: wait for it to land.
-      var myGen = gen;
-      video.addEventListener("seeked", function onSeeked() {
-        video.removeEventListener("seeked", onSeeked);
-        if (myGen === gen) { play(); }
-      });
-    } else {
-      play();
-    }
+    // play() on an ended element restarts at 0 and overrides this seek: wait for it to land.
+    if (!tok.wasEnded) { play(); }
+    return true;
   }
 
-  // Error of what is on screen against the timeline, in seconds (positive = ahead). The presented
-  // frame (requestVideoFrameCallback) is the truth: WebKit's currentTime can freeze after an
-  // 'ended' while playback continues. currentTime is only the fallback when no fresh presented
-  // frame exists (hidden pages deliver presented frames at a few Hz, so freshness is generous).
-  function measureErr(now) {
-    var d = dur();
-    if (isFinite(pres.errPres) && pres.wall >= lastSeekWall + 30 && now - pres.wall <= PRES_FRESH_MS) {
-      return wrapErr(pres.errPres - biasMs / 1000, d);
+  // Frame period estimate in ms: the median media time step between presented frames where
+  // presentedFrames advanced by exactly 1 (no dropped frame), clamped to [1/120, 1/15] s. Samples
+  // within FRAME_QUIET_MS after any seek or while hidden are never collected. It only sizes the
+  // landing tolerance: it never snaps a seek and never sets a seek threshold.
+  function framePeriodMs() {
+    if (frameDeltas.length < 10) { return FRAME_DEFAULT_MS; }
+    var v = frameDeltas.slice().sort(function (a, b) { return a - b; });
+    var m = v[v.length >> 1];
+    return Math.min(Math.max(m, FRAME_MIN_S), FRAME_MAX_S) * 1000;
+  }
+
+  // Slow regime: even the second cheapest of the last SEEK_COST_EVENTS seeks (issue to 'seeked')
+  // costs more than SLOW_SEEK_MS. A clip with an audio track makes every seek cost 150 to 450 ms
+  // (+-90) and no WebKit control lands closer than that. A clip without one has cheap seeks in every
+  // handful (a landing re-seek costs 1 to 10 ms), however cold the decoder or busy the machine, so
+  // it never looks slow. Needs SLOW_MIN_EVENTS seeks before it can say anything.
+  function slowRegime() {
+    if (seekCosts.length < SLOW_MIN_EVENTS) { return false; }
+    var v = seekCosts.slice().sort(function (a, b) { return a - b; });
+    return v[1] > SLOW_SEEK_MS;
+  }
+
+  // Tolerance for a landing: the frame tolerance, or the gross limit when seeks are slow (a retry is
+  // then no better than the seek it replaces, so only a gross landing is worth a re-seek).
+  function tolMs() {
+    return slowRegime() ? GROSS_ERR_MS : Math.max(TOL_MIN_MS, TOL_FRAC * framePeriodMs());
+  }
+
+  // Median error (seconds, positive = ahead) of the recent presented frames; NaN to skip the tick.
+  function controlErr(now) {
+    if (!postSeekOk || !pres.wall || now - pres.wall > ERR_FRESH_MS || video.seeking) return NaN;
+    var v = [];
+    for (var i = 0; i < errRing.length; i++) {
+      if (now - errRing[i].wall <= ERR_WINDOW_MS) { v.push(errRing[i].err); }
     }
-    if (video.seeking || (pres.count > 0 && now - lastSeekWall < 400)) { return NaN; }
-    return wrapErr(video.currentTime - targetAt(now + biasMs), d);
+    if (v.length < ERR_MIN_N) return NaN;
+    v.sort(function (a, b) { return a - b; });
+    return v[v.length >> 1] - biasMs / 1000;
   }
 
   function scheduleWrap() {
@@ -439,14 +605,14 @@
     var wall = Date.now() + biasMs;
     var into = (((wall - sess.epochMs) / 1000) % d + d) % d;
     var untilWrapMs = (d - into) * 1000;
-    var fireIn = untilWrapMs - latency * 1000;
+    var fireIn = untilWrapMs - lead.wrap * 1000;
     if (fireIn < 5) { fireIn += d * 1000; untilWrapMs += d * 1000; }
     var wrapAt = Date.now() + untilWrapMs;
     wrapTimer = setTimeout(function () {
       wrapTimer = null;
       if (myGen !== gen || !joined) return;
       wrapHintMs = wrapAt + biasMs;
-      seekTo();
+      seek("wrap", RETRIES);
       scheduleWrap();
     }, fireIn);
   }
@@ -456,29 +622,40 @@
     if (!(dur() > 0)) return;
     joined = true;
     stats.joins += 1;
-    seekTo();
+    seek("join", JOIN_RETRIES);
     scheduleWrap();
     startTick();
   }
 
-  function recheck(myGen) {
-    if (myGen !== gen || !joined) return;
-    if (video.seeking) {
-      recheckTimer = setTimeout(function () { recheck(myGen); }, 100);
-      return;
+  // A seek has landed and playback is producing fresh frames: learn the lead from it, then re-seek
+  // (up to its retry budget) (with the corrected lead) if the landing is still off the timeline.
+  function landed(t, err) {
+    var key = t.kind === "wrap" ? "wrap" : "seek";
+    note("land:" + t.kind + ":lead=" + t.leadUsed.toFixed(3) + ":err=" + (err * 1000).toFixed(0) + ":seekedMs=" + (t.seekedWall - t.t0) + ":t=" + t.t.toFixed(3));
+    // What this first seek of an event cost: the lead it used minus the error it landed with. The
+    // lead only shortens the visible freeze (a landing re-seek fixes the rest). A cold decoder or a
+    // busy machine makes the odd seek much slower, so it is the median of the last few
+    // observations, never the last one alone.
+    if (!t.isRetry) {
+      var obs = leadObs[key];
+      obs.push(t.leadUsed - err);
+      if (obs.length > LEAD_HISTORY) { obs.shift(); }
+      var sorted = obs.slice().sort(function (a, b) { return a - b; });
+      lead[key] = Math.min(Math.max(sorted[sorted.length >> 1], 0), 0.9);
     }
-    var err = measureErr(Date.now());
-    if (!isFinite(err)) {
-      recheckTimer = setTimeout(function () { recheck(myGen); }, 100);
-      return;
-    }
-    // Learn the seek latency: landing ahead (err > 0) means the lead was too long.
-    latency = Math.min(Math.max(latency - err * 0.8, 0.01), 0.6);
-    // One corrective re-seek when the landing was more than a frame off (the learned latency
-    // above makes the second landing much tighter); rate nudges only take 10 ms per second.
-    if (Math.abs(err) > RECHECK_THRESH * frameDur && recheckBudget > 0) {
-      recheckBudget -= 1;
-      seekTo(true);
+    clearTok();
+    jwUntil = Date.now() + 500;
+    seekCosts.push(t.seekedWall - t.t0);
+    if (seekCosts.length > SEEK_COST_EVENTS) { seekCosts.shift(); }
+    var tol = tolMs();
+    var again = !idle && Math.abs(err) * 1000 > tol && t.retries > 0;
+    if (!again) {
+      if (t.kind === "corr") { corrBackoff = Math.abs(err) * 1000 > tol ? Math.min(corrBackoff * 2, 16) : 1; }
+    } else {
+      // Fast clip: aim at the present and keep trying. Slow clip (uneven seek cost, a retry is no
+      // better than the seek it replaces): aim where a slow seek lands and try only once more.
+      var fast = !slowRegime();
+      seek(t.kind, fast ? t.retries - 1 : 0, true, fast ? 0 : lead[key]);
     }
   }
 
@@ -486,19 +663,24 @@
     if (!sess || !joined) return;
     if (video.error) return;
     var now = Date.now();
-    if (video.ended && !video.seeking && now - lastSeekWall > SETTLE_MS) { seekTo(); return; }
-    if (video.paused && !video.seeking && !video.ended) { play(); }
-    if (video.seeking || now - lastSeekWall < SETTLE_MS) return;
-    var err = measureErr(now);
+    // Test hook: the old behaviour, a seek on every tick whatever is outstanding.
+    if (storm) { seek("corr", 0, false, undefined, true); return; }
+    flushPending();
+    // A paused element is restarted at once, also while a landed seek is waiting for its frames (a
+    // wrap seek can race the natural end of the clip and leave it paused and ended).
+    if (video.paused && !video.seeking && (!tok || tok.seeked) && !video.ended) { play(); }
+    if (tok) return;
+    if (video.ended && !video.seeking) { seek("wrap", RETRIES); return; }
+    if (idle || video.seeking) return;
+    var err = controlErr(now);
     if (!isFinite(err)) return;
-    var ae = Math.abs(err);
-    if (ae > 2 * frameDur) {
-      seekTo();
-    } else if (ae > Math.min(0.5 * frameDur, NUDGE_DEADBAND_MAX)) {
-      stats.nudges += 1;
-      setRate(1 - Math.min(Math.max(err * RATE_GAIN, -RATE_SPAN), RATE_SPAN));
-    } else {
-      setRate(1);
+    var ae = Math.abs(err) * 1000;
+    var slow = slowRegime();
+    if (ae <= (slow ? SLOW_GROSS_MS : tolMs())) { badTicks = 0; return; }
+    badTicks += 1;
+    var cooldown = Math.max(2 * seekLatency * 1000, slow ? SLOW_COOLDOWN_MS : COOLDOWN_MIN_MS) * corrBackoff;
+    if ((slow || ae > GROSS_ERR_MS || badTicks >= CORR_TICKS) && now - lastCorrSeekWall > cooldown) {
+      seek("corr", RETRIES);
     }
   }
 
@@ -507,8 +689,8 @@
     tickTimer = setInterval(tick, TICK_MS);
   }
 
-  // Presented-frame sample: the mediaTime of the frame actually composited, against the target
-  // at its expected display time. Used for the join re-check and for the gate; logged per window.
+  // Presented-frame sample: the mediaTime of the frame actually composited, against the target at
+  // its expected display time. Feeds the control error, the landing check and the gate telemetry.
   function armRvfc() {
     if (rvfcArmed || typeof video.requestVideoFrameCallback !== "function") return;
     rvfcArmed = true;
@@ -516,11 +698,35 @@
       var wallNow = Date.now();
       var disp = (md && isFinite(md.expectedDisplayTime)) ? md.expectedDisplayTime : now;
       var wallAtDisplay = wallNow - performance.now() + disp;
-      if (isFinite(pres.mediaTime) && md.mediaTime > pres.mediaTime) {
-        var delta = md.mediaTime - pres.mediaTime;
-        var frames = (isFinite(md.presentedFrames) && isFinite(pres.presentedFrames)) ? md.presentedFrames - pres.presentedFrames : 1;
-        var per = frames >= 1 ? delta / frames : delta;
-        if (per > 0.004 && per < 0.2) { frameDur = per; }
+      var prevWall = lastCbWall;
+      lastCbWall = wallNow;
+      // A gap with a pause in it (hide, occlusion, an explicit pause) is not a decode stall.
+      if (joined && prevWall && lastPauseWall < prevWall && prevWall >= visibleSince + VIS_DEBOUNCE_MS) {
+        var gap = wallNow - prevWall;
+        if (gap > STALL_MS) {
+          var inJw = wallNow >= jwStart && prevWall <= jwUntil;
+          if (inJw) {
+            // A gap explained by a seek event (join, wrap, corrective), kept per kind.
+            if (jwKind === "wrap") {
+              stats.seamGapMax = Math.max(stats.seamGapMax, gap);
+            } else if (jwKind === "corr") {
+              stats.corrGapMax = Math.max(stats.corrGapMax, gap);
+            } else {
+              stats.joinGapMax = Math.max(stats.joinGapMax, gap);
+            }
+          } else {
+            stats.stallsOut += 1;
+            stats.maxGapOut = Math.max(stats.maxGapOut, gap);
+          }
+        }
+      }
+      var prevMedia = pres.mediaTime;
+      var prevPF = pres.presentedFrames;
+      if (isFinite(prevMedia) && isFinite(prevPF) && md.presentedFrames - prevPF === 1 && md.mediaTime > prevMedia &&
+          document.visibilityState === "visible" && wallNow - visibleSince > FRAME_QUIET_MS &&
+          wallNow - lastSeekWall > FRAME_QUIET_MS && nativeId === 0 && !video.seeking) {
+        frameDeltas.push(md.mediaTime - prevMedia);
+        if (frameDeltas.length > FRAME_SAMPLES) { frameDeltas.shift(); }
       }
       pres.presentedFrames = md.presentedFrames;
       pres.mediaTime = md.mediaTime;
@@ -528,6 +734,26 @@
       pres.wallAtDisplay = wallAtDisplay;
       pres.count += 1;
       pres.errPres = wrapErr(md.mediaTime - targetAt(wallAtDisplay), dur());
+      // A frame counts as post-seek once it is on the new timeline (not a leftover pre-seek frame).
+      var post = postSeekOk;
+      // Playback has moved on from the seek target by at most the time since the seek, so the window
+      // of acceptable media times grows with it (a seek whose 'seeked' came late must not leave the
+      // window blind until the next seek).
+      var sinceSeek = (wallNow - lastSeekWall) / 1000;
+      var fromSeek = isFinite(lastSeekT) ? wrapErr(md.mediaTime - lastSeekT, dur()) : NaN;
+      if (!post && nativeId === 0 && (!tok || tok.seeked) && !video.seeking && fromSeek > -0.5 && fromSeek < sinceSeek + 0.5) {
+        postSeekOk = post = true;
+        postReq = tok ? tok.id : 0;
+      }
+      if (post && isFinite(pres.errPres)) {
+        errRing.push({ wall: wallNow, err: pres.errPres });
+        if (errRing.length > 12) { errRing.shift(); }
+        postFrames += 1;
+        if (tok && tok.seeked && tok.id === postReq && wallNow >= tok.seekedWall && postFrames >= LAND_FRAMES &&
+            isFinite(prevMedia) && md.mediaTime !== prevMedia) {
+          landed(tok, pres.errPres - biasMs / 1000);
+        }
+      }
       if (desyncTrace && wallNow - desyncHookWall <= 1500 && desyncTrace.length < 200) {
         desyncTrace.push({ dt: wallNow - desyncHookWall, errPres: pres.errPres });
       }
@@ -546,8 +772,11 @@
     gen += 1;
     joined = false;
     clearTimers();
+    resetLearned();
     pres.mediaTime = NaN;
     pres.errPres = NaN;
+    postSeekOk = false;
+    errRing = [];
     if (video.readyState >= 1) { join(); }
     return true;
   }
@@ -562,17 +791,39 @@
     armRvfc(); join();
   });
   video.addEventListener("playing", function () { if (!joined) join(); });
-  video.addEventListener("ended", function () { if (joined && Date.now() - lastSeekWall > 100) { seekTo(); } });
+  video.addEventListener("pause", function () { lastPauseWall = Date.now(); });
   video.addEventListener("seeked", function () {
-    if (seekGen !== gen || !joined) return;
-    var measured = (Date.now() - seekStartWall) / 1000;
-    if (measured > 0.005 && measured < 1) { latency = 0.5 * latency + 0.5 * measured; }
-    if (recheckTimer !== null) { clearTimeout(recheckTimer); }
-    var myGen = gen;
-    recheckTimer = setTimeout(function () { recheckTimer = null; recheck(myGen); }, 250);
+    // Still seeking: this event is not the end of the assigned seek (a test hook seek overlapped it).
+    if (video.seeking) return;
+    // The one native seek is answered. Only the request that issued it may be marked as landed;
+    // an answer for a timed out or abandoned request is dropped.
+    var id = nativeId;
+    nativeId = 0;
+    if (id !== 0 && tok && tok.id === id) {
+      var now = Date.now();
+      var measured = (now - tok.t0) / 1000;
+      if (measured > 0.005 && measured < 1.5) { seekLatency = 0.5 * seekLatency + 0.5 * measured; }
+      tok.seeked = true;
+      tok.seekedWall = now;
+      if (tok.wasEnded || video.paused) { play(); }
+    }
+    flushPending();
   });
+  video.addEventListener("emptied", function () { nativeId = 0; });
+  video.addEventListener("ended", function () {
+    // The wrap timer normally beats the end of the clip; if it did not, wrap now under join rules.
+    if (!joined) return;
+    if (!tok) { seek("wrap", RETRIES); } else if (tok.seeked) { play(); }
+  });
+  // Resume after being hidden: re-join once the page has stayed visible for a moment.
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible" && sess) { join(); }
+    if (visTimer !== null) { clearTimeout(visTimer); visTimer = null; }
+    visibleSince = document.visibilityState === "visible" ? Date.now() : Infinity;
+    if (document.visibilityState !== "visible" || !sess) return;
+    visTimer = setTimeout(function () {
+      visTimer = null;
+      if (document.visibilityState === "visible" && sess) { join(); }
+    }, VIS_DEBOUNCE_MS);
   });
 
   window.__applyWallpaperSession = applySession;
@@ -588,6 +839,10 @@
     window.__lastVideoApplied = { src: '', durationMs: 0 };
     window.__videoMetaDuration = 0;
     v.load();
+    // load() aborts any seek in flight and starts a new source: nothing learned applies to it.
+    nativeId = 0;
+    clearTimers();
+    resetLearned();
     v.addEventListener('loadedmetadata', function onMeta() {
       v.removeEventListener('loadedmetadata', onMeta);
       window.__lastVideoApplied = { src: v.currentSrc, durationMs: Math.round((v.duration || 0) * 1000) };
@@ -609,20 +864,43 @@
       mediaTime: isFinite(pres.mediaTime) ? pres.mediaTime : null,
       presAgeMs: presAge,
       presWall: pres.wallAtDisplay,
+      presentedFrames: isFinite(pres.presentedFrames) ? pres.presentedFrames : null,
       vis: document.visibilityState,
+      visibleSinceMs: isFinite(visibleSince) ? now - visibleSince : -1,
       currentTime: ct,
       errCur: sess ? wrapErr(ct - targetAt(now), d) : null,
       errPres: isFinite(pres.errPres) ? pres.errPres : null,
+      // False between a seek being issued and the first frame of the new position being presented:
+      // a frame presented in that gap can still be a pre-seek one, so it carries no information.
+      postOk: postSeekOk,
       rate: video.playbackRate,
       paused: video.paused,
       seeking: video.seeking,
       ended: video.ended,
       readyState: video.readyState,
-      frameDur: frameDur,
       joined: joined,
       seeks: stats.seeks,
-      nudges: stats.nudges,
-      latency: latency,
+      joinSeeks: stats.joinSeeks,
+      wrapSeeks: stats.wrapSeeks,
+      corrSeeks: stats.corrSeeks,
+      seekTimeouts: stats.seekTimeouts,
+      seekQueued: stats.seekQueued,
+      seekAbandoned: stats.seekAbandoned,
+      nativeInFlight: nativeId !== 0,
+      stallsOut: stats.stallsOut,
+      maxGapOut: stats.maxGapOut,
+      seamGapMax: stats.seamGapMax,
+      joinGapMax: stats.joinGapMax,
+      corrGapMax: stats.corrGapMax,
+      tokenKind: tok ? tok.kind : null,
+      framePeriodMs: framePeriodMs(),
+      tolMs: tolMs(),
+      slowRegime: slowRegime(),
+      leadSeek: lead.seek,
+      leadWrap: lead.wrap,
+      seekLatency: seekLatency,
+      idle: idle,
+      storm: storm,
       biasMs: biasMs,
       desyncAppliedErr: desyncAppliedErr,
       desyncTrace: (desyncTrace && now - desyncHookWall <= 3000) ? desyncTrace : null,
@@ -642,14 +920,15 @@
       desyncAppliedErr = wrapErr(video.currentTime - targetAt(Date.now()), d);
       // The controller can correct the offset within one 250 ms tick, faster than the native 250 ms
       // sampler sees it, and occluded pages get only 1 Hz timers. So every presented frame (the
-      // requestVideoFrameCallback below) is recorded for 1.5 s after the hook: the harness then
+      // requestVideoFrameCallback above) is recorded for 1.5 s after the hook: the harness then
       // asserts on the presented-frame error, never on the self-report above.
       desyncHookWall = Date.now();
       desyncTrace = [];
+      errRing = [];
     };
     window.__syncTestBias = function (ms) {
       biasMs = ms;
-      if (joined) { seekTo(); scheduleWrap(); }
+      if (joined) { seek("join", JOIN_RETRIES); scheduleWrap(); }
     };
   }
 

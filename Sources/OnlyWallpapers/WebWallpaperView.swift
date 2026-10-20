@@ -113,7 +113,13 @@ final class WebWallpaperView: WKWebView, WKNavigationDelegate {
         // Shared session (epoch, source rev, probed duration, seed): document-start, so the sync
         // controller and the lightning schedule never run without it (newcomers included).
         var sessionJS = session.userScriptSource
-        if ProcessInfo.processInfo.environment["OW_SYNC_TEST"] == "1" { sessionJS += "window.__syncTest=true;" }
+        if ProcessInfo.processInfo.environment["OW_SYNC_TEST"] == "1" {
+            sessionJS += "window.__syncTest=true;"
+            // ow-blz.8 test modes: idle = join once then rate 1.0 with no corrections (baseline);
+            // storm = reproduce the ow-blz.5 behaviour of one seek per tick (falsifiability).
+            if ProcessInfo.processInfo.environment["OW_SYNC_TEST_IDLE"] == "1" { sessionJS += "window.__syncIdle=true;" }
+            if ProcessInfo.processInfo.environment["OW_SYNC_TEST_SEEKSTORM"] == "1" { sessionJS += "window.__syncStorm=true;" }
+        }
         config.userContentController.addUserScript(WKUserScript(
             source: sessionJS,
             injectionTime: .atDocumentStart,

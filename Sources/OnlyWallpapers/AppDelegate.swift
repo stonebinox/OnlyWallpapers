@@ -238,6 +238,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 mood?.requestLocationOptIn()
             }
             statusItemController = statusItem
+
+            // ow-blz.9: one-time migration, an existing app-storage bg.mp4 that still has an audio track is rewritten
+            // video-only in the background, then every view reloads it under a new session / source revision.
+            if resolved.source == "appstore" {
+                let slotAssetsDir = AppStorageManager.appSupportRoot().appendingPathComponent("web").appendingPathComponent("assets")
+                Task.detached(priority: .utility) { [weak controller] in
+                    let outcome = migrateSlotToVideoOnly(assetsDir: slotAssetsDir)
+                    if outcome == .stripped {
+                        await MainActor.run { controller?.reloadVideo() }
+                    }
+                }
+            }
             mood.start()
 
             emitReady()

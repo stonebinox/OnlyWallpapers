@@ -210,6 +210,17 @@ Last updated: 2026-10-07
   steady-state max pairwise offset about 15 to 18 ms (bar 33 ms) under real load.
   Physical Space pause/resume is a Phase 5 manual check.
 
+- ow-blz.8 + ow-blz.9 (2026-10-20/21): the ow-blz.5 controller caused a SEEK STORM on
+  high frame rate long-GOP video (user's 4K60 clip, keyframe every 1 s): about 95 seeks/min per
+  display, 6 to 9 presented fps, screens still 200+ ms apart. Measured facts that shaped the fix:
+  ANY playbackRate change in WebKit loses 105 to 170 ms of presented timeline (so rate nudges are
+  out; rate is fixed at 1.0); natural drift at rate 1.0 is zero; an audio track (even muted) makes
+  every seek slow (150 to 450 ms). Now: seeks only on join, wrap, source change, visibility resume
+  and persistent error, one native seek in flight with request ids, at most 2 re-seeks per event;
+  and Choose video stores a VIDEO-ONLY copy (passthrough, bitstream untouched, per-packet hashes
+  verified) with a one-time launch migration of an existing slot (`VideoStrip.swift`). Measured on
+  4K60 video-only: pairwise p50 about 1 ms, max about 12 ms, 0 corrective seeks, 55 to 57 fps.
+
 ### Next Step
 Publish v0.1.0 on GitHub Releases (ow-t4r.5, needs the user's explicit go-ahead) and
 link `https://github.com/stonebinox/OnlyWallpapers/releases/latest/download/OnlyWallpapers.zip`

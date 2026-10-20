@@ -14,10 +14,10 @@
 #      error) plus the pairwise offset bar, on this machine's real displays. The fixture is cached in $TMPDIR.
 #   F  (ow-blz.8) falsifiability: OW_SYNC_TEST_SEEKSTORM reproduces the ow-blz.5 behaviour (one seek per tick); the
 #      corrective-seek budget and presented-fps assertions MUST fail on the 4K60 fixture with an audio track (slow seeks, as on the user's clip)
-#   S  (ow-blz.8) soak (~80 s) on the user's REAL clip (copy of OW_SYNC_SOAK_CLIP, default
-#      ~/Library/Application Support/OnlyWallpapers/web/assets/bg.mp4, never modified), as is. Same per-window assertions; the
-#      pairwise bar is only a catastrophe bound because a clip with an audio track makes every seek slow and uneven (see wallpaper.js)
-#   T  (ow-blz.8) the same real clip with the audio track stripped (stream copy): the full tight pairwise bar
+#   S  (ow-blz.8, ow-blz.9) soak (~80 s) on the user's REAL clip (copy of OW_SYNC_SOAK_CLIP, default
+#      ~/Library/Application Support/OnlyWallpapers/web/assets/bg.mp4, never modified). The copy is staged as the bg.mp4 of a temp app
+#      store and the app's own launch migration strips its audio track (the same pipeline as Choose video, ow-blz.9). Same tight bars as T.
+#   T  (ow-blz.8) the same real clip with the audio track stripped by ffmpeg (stream copy): the reference for S
 # Phases P, S, T assert on VISIBLE windows only (a hidden page is throttled and paused by WebKit); the analyzer ignores hidden or
 # paused samples and the 5 s after, and fails "windows-visible" if a display is covered. OW_SYNC_SINGLE_DISPLAY=1 runs them on
 # two windows of the primary display instead (the fallback when another display has a maximized window on it).
@@ -444,13 +444,47 @@ if want S || want T; then
         SOAK_DUR="$(probe "$SOAK_COPY")"
         FPS_4K="$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$SOAK_COPY" | python3 -I -c 'import sys; n,d=sys.stdin.read().strip().split("/"); print(float(n)/float(d))')"
         if want S; then
-            step "(S) soak on the real clip as is (${SOAK_DUR}s, ${FPS_4K} fps, about 85 s)"
-            # Slow uneven seeks (audio track, every seek costs 150 to 450 ms +-90): the no-storm assertions are unchanged; the offset bars
-            # are only a catastrophe bound (the numbers are the report) because no WebKit control reaches better, see wallpaper.js.
-            run_perf_phase S "$SOAK_COPY" "$SOAK_DUR" 82 "windows,steady,perf" --pair-p95-ms 1000 --pair-max-ms 2000 --perf-allow-seek-timeouts --perf-abs-p95-ms 500 --perf-seam-ms 800
+            step "(S) soak on the real clip after the app's own strip pipeline (${SOAK_DUR}s, ${FPS_4K} fps, about 85 s)"
+            # ONE app instance does everything: stage the clip as the bg.mp4 of a temp store (a seed launch first so the store resolves as
+            # app storage), then launch the measured instance. Its launch migration (ow-blz.9) strips the audio track natively and reloads
+            # every window under a new source revision; the steady, seams and perf analysis runs on that same instance, on rev 1 only.
+            SOAK_SUP="$WORK/support-soak-strip"
+            env -u WALLPAPER_WEB_DIR -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON -u OW_SYNC_TEST OW_SUPPRESS_FIRST_RUN=1 OW_APP_SUPPORT_DIR="$SOAK_SUP" "$BIN" > "$WORK/soak-seed.out" 2>&1 &
+            PID=$!
+            wait_for "$WORK/soak-seed.out" "ONLYWALLPAPERS_READY" 20 || { echo "FAIL: app (S seed) never became ready"; FAILS=$((FAILS + 1)); }
+            stop_app
+            mkdir -p "$SOAK_SUP/web/assets"
+            cp "$SOAK_COPY" "$SOAK_SUP/web/assets/bg.mp4"
+            SOAK_HAS_AUDIO="$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$SOAK_COPY" | grep -c . || true)"
+            SOAK_VDUR="$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$SOAK_COPY")"
+            OUT="$WORK/run-S.out"; MARKS="$WORK/marks-S.jsonl"; : > "$MARKS"
+            perf_env S
+            env -u WALLPAPER_WEB_DIR -u OW_MOOD_TEST -u OW_MOOD_WEATHER_JSON \
+                OW_SYNC_TEST=1 OW_WGT_TEST=1 OW_SUPPRESS_FIRST_RUN=1 OW_APP_SUPPORT_DIR="$SOAK_SUP" \
+                ${PERF_ENV[@]+"${PERF_ENV[@]}"} "$BIN" > "$OUT" 2>&1 &
+            PID=$!
+            wait_for "$OUT" "ONLYWALLPAPERS_READY" 20 || { echo "FAIL: app (S) never became ready"; FAILS=$((FAILS + 1)); }
+            if [[ "$SOAK_HAS_AUDIO" -ge 1 ]]; then
+                wait_for "$OUT" "ONLYWALLPAPERS_VIDEO migrate=" 120 || { echo "FAIL: app (S) never logged a migration outcome"; FAILS=$((FAILS + 1)); }
+                wait_for "$OUT" "ONLYWALLPAPERS_VIDEO reload views=" 20 || { echo "FAIL: app (S) never reloaded its windows after the strip"; FAILS=$((FAILS + 1)); }
+            fi
+            sleep 82
+            mark end
+            stop_app
+            grep 'ONLYWALLPAPERS_VIDEO \(strip\|migrate\|reload\)' "$OUT"
+            SOAK_STRIPPED="$SOAK_SUP/web/assets/bg.mp4"
+            SOAK_OUT_AUDIO="$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$SOAK_STRIPPED" | grep -c . || true)"
+            S_REV=0; [[ "$SOAK_HAS_AUDIO" -ge 1 ]] && S_REV=1
+            if [[ "$SOAK_OUT_AUDIO" -eq 0 ]] && { [[ "$SOAK_HAS_AUDIO" -eq 0 ]] || grep -q 'ONLYWALLPAPERS_VIDEO migrate=stripped' "$OUT"; }; then
+                echo "SYNC_ASSERT pass soak-clip-stripped-by-app-pipeline source_audio_streams=$SOAK_HAS_AUDIO output_audio_streams=$SOAK_OUT_AUDIO"
+            else
+                echo "SYNC_ASSERT FAIL soak-clip-stripped-by-app-pipeline source_audio_streams=$SOAK_HAS_AUDIO output_audio_streams=$SOAK_OUT_AUDIO"; FAILS=$((FAILS + 1))
+            fi
+            if python3 -I scripts/sync-check-analyze.py "$OUT" "$MARKS" --checks "windows,migrated,steady,seams,perf" --rev "$S_REV" --fps "$FPS_4K" --dur-a "$SOAK_VDUR" --label S --visible-only > "$WORK/analysis-S.txt" 2>&1; then :; else FAILS=$((FAILS + 1)); fi
+            cat "$WORK/analysis-S.txt"
         fi
         if want T; then
-            step "(T) soak on the real clip with the audio track stripped (about 85 s)"
+            step "(T) soak on the real clip with the audio track stripped by ffmpeg, the reference for S (about 85 s)"
             SOAK_NA="$WORK/soak-real-noaudio.mp4"
             ffmpeg -y -loglevel error -i "$SOAK_COPY" -an -c:v copy -movflags +faststart "$SOAK_NA" || { echo "FAIL: ffmpeg strip audio"; FAILS=$((FAILS + 1)); }
             [[ -f "$SOAK_NA" ]] && run_perf_phase T "$SOAK_NA" "$(probe "$SOAK_NA")" 82 "windows,steady,seams,perf"

@@ -157,10 +157,16 @@ final class StatusItemController {
     }
 }
 
-nonisolated func copyVideoFile(from srcURL: URL, toAssetsDir destDir: URL) -> Result<Void, Error> {
+// Puts `srcURL` into the single bg.mp4 slot (.partial, then atomic swap). A source with an audio (or any non-video) track
+// is written video-only with the video bitstream untouched (ow-blz.9); a video-only source takes the plain copy path.
+// If the strip fails the original is copied instead, so the slot is never broken.
+nonisolated func copyVideoFile(from srcURL: URL, toAssetsDir destDir: URL, stripper: VideoStripper = stripToVideoOnly) -> Result<Void, Error> {
+    videoSlotLock.lock()
+    defer { videoSlotLock.unlock() }
     let fm = FileManager.default
     let slotURL = destDir.appendingPathComponent("bg.mp4")
-    let partialURL = destDir.appendingPathComponent("bg.mp4.partial")
+    cleanStalePartials(in: destDir)
+    var partialURL = uniquePartialURL(in: destDir)
 
     do {
         let attrs = try fm.attributesOfItem(atPath: srcURL.path)
@@ -176,23 +182,37 @@ nonisolated func copyVideoFile(from srcURL: URL, toAssetsDir destDir: URL) -> Re
         if fm.fileExists(atPath: partialURL.path) {
             try fm.removeItem(at: partialURL)
         }
-        try fm.copyItem(at: srcURL, to: partialURL)
-        let copiedAttrs = try fm.attributesOfItem(atPath: partialURL.path)
-        let copiedSize = (copiedAttrs[.size] as? Int) ?? 0
-        if copiedSize != fileSize {
-            try? fm.removeItem(at: partialURL)
-            return .failure(NSError(domain: "OnlyWallpapers", code: 2, userInfo: [NSLocalizedDescriptionKey: "Copy size mismatch."]))
+
+        var installedSize = fileSize
+        var stripped = false
+        if let summary = summarizeTracks(url: srcURL), summary.videoTracks >= 1, summary.otherTracks > 0 {
+            do {
+                let stats = try stripper(srcURL, partialURL)
+                if let bad = validateStripped(src: srcURL, out: partialURL) { throw VideoStripError(reason: bad) }
+                installedSize = stats.bytesOut
+                stripped = true
+                videoLog("strip=done \(stats.logFields)")
+            } catch {
+                discardPartial(partialURL, after: error)
+                // The fallback copy never reuses the stripper's path: an export that did not stop could still write it.
+                partialURL = uniquePartialURL(in: destDir)
+                videoLog("strip=failed reason=\(error.localizedDescription)")
+            }
+        }
+        if !stripped {
+            try fm.copyItem(at: srcURL, to: partialURL)
+            let copiedAttrs = try fm.attributesOfItem(atPath: partialURL.path)
+            let copiedSize = (copiedAttrs[.size] as? Int) ?? 0
+            if copiedSize != fileSize {
+                try? fm.removeItem(at: partialURL)
+                return .failure(NSError(domain: "OnlyWallpapers", code: 2, userInfo: [NSLocalizedDescriptionKey: "Copy size mismatch."]))
+            }
         }
 
-        // FIX 4: replaceItemAt requires the destination to exist; on first pick it does not.
-        // Use moveItem when the slot is absent; replaceItemAt when it exists (atomic swap).
-        if fm.fileExists(atPath: slotURL.path) {
-            _ = try fm.replaceItemAt(slotURL, withItemAt: partialURL)
-        } else {
-            try fm.moveItem(at: partialURL, to: slotURL)
-        }
+        // replaceItemAt requires the destination to exist; on first pick it does not.
+        try installIntoSlot(partialURL: partialURL, slotURL: slotURL)
 
-        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_VIDEO slot=ok bytes=\(copiedSize)\n".utf8))
+        videoLog("slot=ok bytes=\(installedSize)")
         return .success(())
     } catch {
         try? fm.removeItem(at: partialURL)

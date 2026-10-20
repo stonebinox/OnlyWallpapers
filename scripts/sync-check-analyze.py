@@ -18,7 +18,8 @@ EVT_RE = re.compile(r"^ONLYWALLPAPERS_SYNC_EVENTS win=(\d+) idx=(\d+) (\{.*\})\s
 ap = argparse.ArgumentParser()
 ap.add_argument("out")
 ap.add_argument("marks")
-ap.add_argument("--checks", required=True, help="comma list: windows,steady,seams,desync,rebuild,swap,lightning,newcomer,retire")
+ap.add_argument("--checks", required=True, help="comma list: windows,steady,seams,desync,rebuild,swap,lightning,newcomer,retire,probefail,perf,migrated")
+ap.add_argument("--rev", type=int, default=0, help="source revision the steady, seams, perf and migrated checks measure (1 after a launch migration reload)")
 ap.add_argument("--fps", type=float, default=30.0)
 ap.add_argument("--dur-a", type=float, required=True)
 ap.add_argument("--dur-b", type=float, default=0.0)
@@ -221,7 +222,12 @@ def offset_assert(name, label, t0, t1, rev=None, min_n=10, idxs=None, extra=""):
 
 def first_all_samples():
     ws = live_windows()
-    return max(samples[i][0]["now"] for i in ws) if ws else 0
+    firsts = []
+    for i in ws:
+        r = [x["now"] for x in samples[i] if x["rev"] == args.rev]
+        if r:
+            firsts.append(r[0])
+    return max(firsts) if firsts and len(firsts) == len(ws) else (max(samples[i][0]["now"] for i in ws) if ws else 0)
 
 
 def seams(epoch, dur, t0, t1):
@@ -259,33 +265,52 @@ if "windows" in checks:
     for i in ws:
         last = samples[i][-1]
         firsts[i] = (last["rev"], last["epochMs"], last["durationSec"])
-    sess_a = [(s["epochMs"], s["durationSec"]) for i in ws for s in samples[i][:1]]
+    first_rev = {i: next((x for x in samples[i] if x["rev"] == args.rev), samples[i][0]) for i in ws}
+    sess_a = [(first_rev[i]["epochMs"], first_rev[i]["durationSec"]) for i in ws]
     assert_("session-identical-across-windows", len(set(sess_a)) == 1, str(sorted(set(sess_a))))
-    assert_("duration-probed-natively", ws and all(abs(samples[i][0]["durationSec"] - args.dur_a) < 0.05 for i in ws),
-            "probed=%s expected=%.3f" % (sorted(set(samples[i][0]["durationSec"] for i in ws)), args.dur_a))
+    assert_("duration-probed-natively", ws and all(abs(first_rev[i]["durationSec"] - args.dur_a) < 0.05 for i in ws),
+            "probed=%s expected=%.3f" % (sorted(set(first_rev[i]["durationSec"] for i in ws)), args.dur_a))
     # A window the OS has hidden is paused by WebKit; that is not a controller failure.
     assert_("all-windows-playing", ws and all(not samples[i][-1]["paused"] or samples[i][-1].get("vis", "visible") != "visible" for i in ws))
+
+if "migrated" in checks:
+    # ow-blz.9: the launch migration reload of THIS instance. Every window that sampled must end on the new source
+    # revision and be playing (a hidden page is paused by WebKit by design, so it is exempt from the playing bar only).
+    mws = sorted(samples.keys())
+    assert_("migrated-windows-sampled", len(mws) >= args.min_windows and connected is not None and len(mws) == connected,
+            "sampled=%d connected=%s" % (len(mws), connected))
+    last_rev = {i: samples[i][-1]["rev"] for i in mws}
+    assert_("migrated-every-window-on-rev-%d" % args.rev, bool(mws) and all(r == args.rev for r in last_rev.values()), str(last_rev))
+    notplay = []
+    for i in mws:
+        new = [x for x in samples[i] if x["rev"] == args.rev]
+        last = samples[i][-1]
+        hidden = last.get("vis", "visible") != "visible"
+        advanced = len(new) >= 3 and (new[-1]["currentTime"] - new[0]["currentTime"] > 0.2 or new[-1]["currentTime"] < new[0]["currentTime"])
+        if not hidden and (last["paused"] or not advanced):
+            notplay.append("w%d:paused=%s new_samples=%d" % (i, last["paused"], len(new)))
+    assert_("migrated-every-window-playing", bool(mws) and not notplay, "not_playing=%s" % notplay)
 
 if "steady" in checks:
     end = marks.get("desync", marks.get("rebuild", marks.get("swap", t_end)))
     t0 = t_first + args.settle_ms
-    worst, n, at = offset_assert("steady-state-pairwise-offset", "steady", t0, end, rev=0, min_n=20,
+    worst, n, at = offset_assert("steady-state-pairwise-offset", "steady", t0, end, rev=args.rev, min_n=20,
                                  extra=" window=[+%.1fs,+%.1fs]" % ((t0 - t_first) / 1000, (end - t_first) / 1000))
     steady_values.append(worst)
-    cw, cn, _ = pairwise(t0, end, rev=0, key="errCur")
+    cw, cn, _ = pairwise(t0, end, rev=args.rev, key="errCur")
     print("SYNC_METRIC steady_max_pairwise_currentTime_ms=%.2f pairs=%d (informational: WebKit currentTime is glitchy)" % (cw, cn))
 
 if "seams" in checks:
     end = marks.get("desync", t_end)
     t0 = t_first + args.settle_ms
-    ep = epoch_of(0)
+    ep = epoch_of(args.rev)
     sm = seams(ep, args.dur_a, t0, end) if ep else []
     assert_("seams-crossed>=3", len(sm) >= 3, "seams=%d" % len(sm))
     worst_c = 0.0
     nn = 0
     seam_diffs = []
     for t in sm:
-        w, n, _ = pairwise(t - 500, t + 1200, rev=0, diffs_out=seam_diffs)
+        w, n, _ = pairwise(t - 500, t + 1200, rev=args.rev, diffs_out=seam_diffs)
         worst_c = max(worst_c, w)
         nn += n
     # Plan bar (ow-blz.8): p95 <= max(1 frame, 20 ms) and max <= 2 frames, seams included. Two windows
@@ -300,7 +325,7 @@ if "seams" in checks:
     for i in live_windows():
         prev = None
         for s in samples[i]:
-            if s["rev"] != 0 or s["now"] < t0 or s["now"] > end:
+            if s["rev"] != args.rev or s["now"] < t0 or s["now"] > end:
                 prev = None
                 continue
             if prev is not None and prev["currentTime"] - s["currentTime"] > args.dur_a / 2:
@@ -498,7 +523,7 @@ if "perf" in checks:
             n += 1
         return n
     for i in ws:
-        allsm = [x for x in samples[i] if t0 <= x["now"] <= t1 and x["rev"] == 0 and x.get("presentedFrames") is not None]
+        allsm = [x for x in samples[i] if t0 <= x["now"] <= t1 and x["rev"] == args.rev and x.get("presentedFrames") is not None]
         sm = [x for x in allsm if x["visOk"]]
         if len(sm) < 8:
             assert_("perf-w%d-enough-visible-samples" % i, False, "visible_samples=%d of %d" % (len(sm), len(allsm)))

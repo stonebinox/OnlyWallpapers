@@ -33,8 +33,9 @@ effects (Epic D, ow-aqx.3).
   in `window.__wallpaperApplied`); a framing IIFE applies `window.__wallpaperFraming`;
   a SYNC controller (ow-blz.5, replaced the old autoplay IIFE) that follows the shared
   session clock in `window.__wallpaperSession`, seeks on join and on drift beyond 2 frames,
-  nudges playbackRate within [0.99, 1.01] and performs the loop wrap itself, so every
-  display presents the same frame; and a MOOD IIFE (ow-aqx.15) exposes `window.__setWallpaperMood`, validates the
+  keeps playbackRate at exactly 1.0 (ow-blz.8: any rate change loses 105 to 170 ms in
+  WebKit), corrects only with guarded seeks (one in flight, at most 2 re-seeks per event)
+  and performs the loop wrap itself, so every display presents the same frame; and a MOOD IIFE (ow-aqx.15) exposes `window.__setWallpaperMood`, validates the
   incoming filter against the 5-function shape, applies it to `#bg.style.filter`
   (transition off on the first apply, then re-enabled so it does not snap on load), and
   records the parsed numbers in `window.__moodApplied`.

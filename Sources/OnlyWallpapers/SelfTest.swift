@@ -1,4 +1,6 @@
 import AppKit
+import AVFoundation
+import CryptoKit
 import Foundation
 import CoreGraphics
 
@@ -6,6 +8,12 @@ enum SelfTest {
     static func runAll() {
         var passed = 0
         var failed = 0
+        var skipped = 0
+
+        func skip(_ name: String, reason: String) {
+            FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SELFTEST name=\(name) result=skipped reason=\(reason)\n".utf8))
+            skipped += 1
+        }
 
         func check(_ name: String, _ condition: Bool) {
             let result = condition ? "pass" : "fail"
@@ -879,8 +887,298 @@ enum SelfTest {
         check("session-adopt-literal-carries-duration", adopted.jsLiteral.contains("\"durationSec\":4.0"))
         check("session-adopt-leaves-probed-session-alone", sess0.adoptingDuration(99) == sess0)
 
-        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SELFTEST summary passed=\(passed) failed=\(failed)\n".utf8))
+        // Video-only slot (ow-blz.9): fixtures made with ffmpeg, real AVFoundation passthrough. Without ffmpeg the group is
+        // SKIPPED (never failed); scripts/strip-check.sh is the gate that requires ffmpeg.
+        if findExecutable("ffmpeg") != nil {
+            runStripSelfTests(check: check)
+        } else {
+            skip("strip-and-migrate-selftests", reason: "ffmpeg-not-found")
+        }
+
+        FileHandle.standardOutput.write(Data("ONLYWALLPAPERS_SELFTEST summary passed=\(passed) failed=\(failed) skipped=\(skipped)\n".utf8))
         exit(failed == 0 ? 0 : 1)
+    }
+
+    private struct VideoFingerprint: Equatable {
+        var codec: String
+        var width: Int
+        var height: Int
+        var samples: Int
+        var payloadSHA256: String
+        var durationSec: Double
+        var transform: [Double]
+        var videoTracks: Int
+        var otherTracks: Int
+    }
+
+    private static func fingerprint(_ url: URL) -> VideoFingerprint? {
+        nonisolated final class Out: @unchecked Sendable { var fp: VideoFingerprint? }
+        let out = Out()
+        let sem = DispatchSemaphore(value: 0)
+        Task.detached {
+            defer { sem.signal() }
+            let asset = AVURLAsset(url: url)
+            guard let tracks = try? await asset.load(.tracks),
+                  let v = tracks.first(where: { $0.mediaType == .video }),
+                  let fds = try? await v.load(.formatDescriptions), let fd = fds.first,
+                  let size = try? await v.load(.naturalSize),
+                  let tf = try? await v.load(.preferredTransform),
+                  let range = try? await v.load(.timeRange),
+                  let reader = try? AVAssetReader(asset: asset) else { return }
+            let output = AVAssetReaderTrackOutput(track: v, outputSettings: nil)
+            reader.add(output)
+            guard reader.startReading() else { return }
+            var n = 0
+            // SHA-256 over the compressed payload of every video sample, in order (the bitstream, not just sizes).
+            var hasher = SHA256()
+            while let sb = output.copyNextSampleBuffer() {
+                if CMSampleBufferGetNumSamples(sb) > 0 { n += CMSampleBufferGetNumSamples(sb) }
+                if let block = CMSampleBufferGetDataBuffer(sb) {
+                    let len = CMBlockBufferGetDataLength(block)
+                    var bytes = [UInt8](repeating: 0, count: len)
+                    if len > 0, CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: len, destination: &bytes) == kCMBlockBufferNoErr {
+                        hasher.update(data: bytes)
+                    }
+                }
+            }
+            let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            let sub = CMFormatDescriptionGetMediaSubType(fd)
+            let codec = String(bytes: [UInt8((sub >> 24) & 255), UInt8((sub >> 16) & 255), UInt8((sub >> 8) & 255), UInt8(sub & 255)], encoding: .ascii) ?? "?"
+            let vcount = tracks.filter { $0.mediaType == .video }.count
+            out.fp = VideoFingerprint(codec: codec, width: Int(size.width), height: Int(size.height), samples: n, payloadSHA256: digest,
+                                      durationSec: CMTimeGetSeconds(range.duration),
+                                      transform: [tf.a, tf.b, tf.c, tf.d, tf.tx, tf.ty],
+                                      videoTracks: vcount, otherTracks: tracks.count - vcount)
+        }
+        _ = sem.wait(timeout: .now() + 60)
+        return out.fp
+    }
+
+    // PATH lookup plus the usual Homebrew locations (a GUI or minimal-PATH launch may not carry them).
+    // OW_SELFTEST_NO_FFMPEG=1 simulates a machine without ffmpeg (the Homebrew fallback dirs would otherwise still find it).
+    private static func findExecutable(_ name: String) -> String? {
+        if name == "ffmpeg", ProcessInfo.processInfo.environment["OW_SELFTEST_NO_FFMPEG"] == "1" { return nil }
+        let pathDirs = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        for dir in pathDirs + ["/usr/local/bin", "/opt/homebrew/bin"] {
+            let candidate = dir + "/" + name
+            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return nil
+    }
+
+    private static func runFFmpeg(_ args: [String]) -> Bool {
+        guard let ffmpeg = findExecutable("ffmpeg") else { return false }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: ffmpeg)
+        p.arguments = ["-y", "-loglevel", "error"] + args
+        p.standardInput = FileHandle.nullDevice
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    private static func runStripSelfTests(check: (String, Bool) -> Void) {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("ow-strip-selftest-\(UUID().uuidString)")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        func make(_ name: String, audio: Bool, rotate: Bool = false, bframes: Bool = true) -> URL? {
+            let out = dir.appendingPathComponent(name)
+            var args: [String] = []
+            args += ["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30"]
+            if audio { args += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"] }
+            args += ["-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "15", "-bf", bframes ? "2" : "0"]
+            if audio { args += ["-c:a", "aac", "-shortest"] } else { args += ["-an"] }
+            args += ["-movflags", "+faststart", out.path]
+            guard runFFmpeg(args) else { return nil }
+            if rotate {
+                // Display rotation is container metadata: remux the encoded file with the rotation flag.
+                let rot = dir.appendingPathComponent("rot-\(name)")
+                guard runFFmpeg(["-display_rotation", "90", "-i", out.path, "-c", "copy", "-movflags", "+faststart", rot.path]) else { return nil }
+                try? fm.removeItem(at: out)
+                try? fm.moveItem(at: rot, to: out)
+            }
+            return out
+        }
+        guard let withAudio = make("with-audio.mp4", audio: true),
+              let videoOnly = make("video-only.mp4", audio: false),
+              let rotated = make("rotated-audio.mp4", audio: true, rotate: true) else {
+            check("strip-fixtures-generated-with-ffmpeg", false)
+            return
+        }
+        check("strip-fixtures-generated-with-ffmpeg", true)
+
+        func partials(_ d: URL) -> [String] { ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).filter { $0.hasSuffix(".partial") } }
+
+        // Summaries
+        check("strip-summary-audio", summarizeTracks(url: withAudio) == VideoTrackSummary(videoTracks: 1, otherTracks: 1, audioTracks: 1))
+        check("strip-summary-video-only", summarizeTracks(url: videoOnly) == VideoTrackSummary(videoTracks: 1, otherTracks: 0, audioTracks: 0))
+        check("strip-summary-garbage-nil", summarizeTracks(url: dir.appendingPathComponent("missing.mp4")) == nil)
+
+        // Choose path with audio: slot ends video-only, video track identical.
+        func choose(_ src: URL, stripper: VideoStripper = stripToVideoOnly) -> (ok: Bool, slot: URL, assets: URL) {
+            let assets = dir.appendingPathComponent("assets-\(UUID().uuidString)")
+            try? fm.createDirectory(at: assets, withIntermediateDirectories: true)
+            var ok = false
+            if case .success = copyVideoFile(from: src, toAssetsDir: assets, stripper: stripper) { ok = true }
+            return (ok, assets.appendingPathComponent("bg.mp4"), assets)
+        }
+        let a = choose(withAudio)
+        let fa = fingerprint(withAudio)
+        let fo = fingerprint(a.slot)
+        check("strip-choose-ok", a.ok && fo != nil && fa != nil)
+        check("strip-output-zero-audio-tracks", summarizeTracks(url: a.slot) == VideoTrackSummary(videoTracks: 1, otherTracks: 0, audioTracks: 0))
+        let statsOut = dir.appendingPathComponent("stats-out.mp4")
+        let stats = try? stripToVideoOnly(src: withAudio, dst: statsOut)
+        check("strip-stats-count-audio-only", stats?.audioTracksRemoved == 1 && stats?.otherTracksRemoved == 0)
+        check("strip-stats-log-fields-separate", stats?.logFields.hasPrefix("audio_tracks_removed=1 other_tracks_removed=0 bytes_in=") == true)
+        check("strip-video-codec-identical", fa?.codec == fo?.codec && fo?.codec == "avc1")
+        check("strip-video-dimensions-identical", fa?.width == fo?.width && fa?.height == fo?.height)
+        check("strip-video-sample-count-identical", fa?.samples == fo?.samples && (fo?.samples ?? 0) == 90)
+        check("strip-video-payload-hash-identical", (fa?.payloadSHA256.count ?? 0) == 64 && fa?.payloadSHA256 == fo?.payloadSHA256)
+        // Falsifiability: a re-encode with the same size and frame count must NOT pass the identity check.
+        let reenc = dir.appendingPathComponent("reencoded.mp4")
+        let reencOK = runFFmpeg(["-i", withAudio.path, "-map", "0:v", "-c:v", "libx264", "-crf", "30", "-pix_fmt", "yuv420p", "-g", "15", "-an", reenc.path])
+        let fre = fingerprint(reenc)
+        check("strip-identity-rejects-reencode", reencOK && fre != nil && fre?.width == fa?.width && fre?.height == fa?.height
+              && fre?.samples == fa?.samples && fre?.payloadSHA256 != fa?.payloadSHA256)
+        check("strip-video-duration-within-one-frame", abs((fa?.durationSec ?? 0) - (fo?.durationSec ?? 99)) <= 1.0 / 30.0)
+        check("strip-video-transform-identical", fa?.transform == fo?.transform)
+        check("strip-no-partial-left", partials(a.assets).isEmpty)
+
+        // Rotation survives the strip.
+        let r = choose(rotated)
+        let fr0 = fingerprint(rotated), fr1 = fingerprint(r.slot)
+        check("strip-rotation-source-is-rotated", (fr0?.transform ?? [1, 0, 0, 1, 0, 0]) != [1, 0, 0, 1, 0, 0])
+        check("strip-rotation-preserved", fr0?.transform == fr1?.transform && fr0?.samples == fr1?.samples)
+
+        // Video-only input takes the plain copy path (byte identical, stripper never called).
+        nonisolated final class Called: @unchecked Sendable { var n = 0 }
+        let called = Called()
+        let counting: VideoStripper = { s, d in called.n += 1; return try stripToVideoOnly(src: s, dst: d) }
+        let v = choose(videoOnly, stripper: counting)
+        check("strip-video-only-uses-copy-path", v.ok && called.n == 0 && fm.contentsEqual(atPath: videoOnly.path, andPath: v.slot.path))
+
+        // Failure fallback: a throwing stripper and a stripper that writes garbage both leave the ORIGINAL in the slot.
+        let failing: VideoStripper = { _, _ in throw VideoStripError(reason: "selftest injected failure") }
+        let f1 = choose(withAudio, stripper: failing)
+        check("strip-failure-falls-back-to-original", f1.ok && fm.contentsEqual(atPath: withAudio.path, andPath: f1.slot.path))
+        check("strip-failure-leaves-no-partial", partials(f1.assets).isEmpty)
+        let garbage: VideoStripper = { _, d in
+            try Data("not an mp4".utf8).write(to: d)
+            return VideoStripStats(audioTracksRemoved: 1, bytesIn: 1, bytesOut: 10, ms: 0)
+        }
+        let f2 = choose(withAudio, stripper: garbage)
+        check("strip-invalid-output-falls-back-to-original", f2.ok && fm.contentsEqual(atPath: withAudio.path, andPath: f2.slot.path))
+
+        // Replace branch keeps one slot and strips again.
+        let again = a.assets
+        _ = copyVideoFile(from: rotated, toAssetsDir: again)
+        check("strip-replace-slot-stripped", summarizeTracks(url: a.slot)?.otherTracks == 0 && fingerprint(a.slot)?.transform == fr0?.transform)
+
+        // Timeout (ow-blz.9): a stripper that times out is cancelled AND waited for before the fallback touches any file.
+        // cooperative = honours cancellation (never writes); stubborn = ignores it but ends inside the grace period and then
+        // writes its path; runaway = still running after the grace period (writes its path immediately and again later).
+        // The strippers throw the production timeout error (stripTimeoutError), so the callers' behaviour is the real one.
+        enum Mode: String { case cooperative, stubborn, runaway }
+        nonisolated final class Paths: @unchecked Sendable { var dst: [URL] = [] }
+        let seenPaths = Paths()
+        func slowStripper(_ mode: Mode) -> VideoStripper {
+            return { _, d in
+                seenPaths.dst.append(d)
+                let grace = mode == .runaway ? 0.3 : 5.0
+                let r = runWithTimeout(false, timeoutSec: 0.3, graceSec: grace) { () async -> Bool in
+                    switch mode {
+                    case .cooperative:
+                        do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return false }
+                    case .stubborn:
+                        usleep(1_000_000)
+                    case .runaway:
+                        try? Data("early export bytes".utf8).write(to: d)
+                        usleep(1_200_000)
+                    }
+                    try? Data("late export bytes".utf8).write(to: d)
+                    return true
+                }
+                if r.timedOut { throw stripTimeoutError(stopped: r.stopped) }
+                return VideoStripStats(audioTracksRemoved: 1, bytesIn: 1, bytesOut: 1, ms: 0)
+            }
+        }
+        for mode in [Mode.cooperative, .stubborn, .runaway] {
+            let tag = mode.rawValue
+            let t = choose(withAudio, stripper: slowStripper(mode))
+            let stalePath = seenPaths.dst.last
+            check("strip-timeout-\(tag)-fallback-installed-intact", t.ok && fm.contentsEqual(atPath: withAudio.path, andPath: t.slot.path))
+            check("strip-timeout-\(tag)-partial-path-unique", stalePath != nil && stalePath?.lastPathComponent != "bg.mp4.partial"
+                  && stalePath?.lastPathComponent.hasPrefix("bg.mp4.") == true && stalePath?.pathExtension == "partial")
+            let slotData = try? Data(contentsOf: t.slot)
+            if mode == .runaway {
+                // Export still running after the grace period: the caller must leave its partial alone (not delete it
+                // from under the exporter), and the next operation's cleanStalePartials removes it.
+                let leftNow = fm.fileExists(atPath: stalePath?.path ?? "/nonexistent")
+                check("strip-timeout-runaway-partial-left-for-cleanup", leftNow)
+                Thread.sleep(forTimeInterval: 1.5)
+                let late = stalePath.flatMap { try? Data(contentsOf: $0) }
+                check("strip-timeout-runaway-export-kept-writing-its-own-path", late == Data("late export bytes".utf8)
+                      && (try? Data(contentsOf: t.slot)) == slotData)
+                check("strip-timeout-runaway-only-slot-and-its-partial", ((try? fm.contentsOfDirectory(atPath: t.assets.path)) ?? []).sorted()
+                      == ["bg.mp4", stalePath?.lastPathComponent ?? ""].sorted())
+                cleanStalePartials(in: t.assets)
+                check("strip-timeout-runaway-cleanup-removes-it", partials(t.assets).isEmpty && (try? Data(contentsOf: t.slot)) == slotData)
+                // The same through the launch migration: the unstopped export's partial is left, then cleaned by the next run.
+                let mr = dir.appendingPathComponent("mig-runaway-\(UUID().uuidString)")
+                try? fm.createDirectory(at: mr, withIntermediateDirectories: true)
+                try? fm.copyItem(at: withAudio, to: mr.appendingPathComponent("bg.mp4"))
+                check("strip-timeout-runaway-migrate-failed", migrateSlotToVideoOnly(assetsDir: mr, stripper: slowStripper(.runaway)) == .failed)
+                let mrPartial = seenPaths.dst.last
+                check("strip-timeout-runaway-migrate-partial-left", partials(mr).count == 1 && mrPartial?.deletingLastPathComponent().path == mr.path
+                      && fm.fileExists(atPath: mrPartial?.path ?? "/nonexistent")
+                      && fm.contentsEqual(atPath: withAudio.path, andPath: mr.appendingPathComponent("bg.mp4").path))
+                Thread.sleep(forTimeInterval: 1.5)
+                check("strip-timeout-runaway-migrate-next-run-cleans", migrateSlotToVideoOnly(assetsDir: mr) == .stripped && partials(mr).isEmpty)
+            } else {
+                let before = (try? fm.contentsOfDirectory(atPath: t.assets.path).sorted()) ?? []
+                Thread.sleep(forTimeInterval: 2.5)
+                let after = (try? fm.contentsOfDirectory(atPath: t.assets.path).sorted()) ?? []
+                check("strip-timeout-\(tag)-stale-export-cannot-write-afterwards", before == after && before == ["bg.mp4"]
+                      && !fm.fileExists(atPath: stalePath?.path ?? "/nonexistent") && (try? Data(contentsOf: t.slot)) == slotData)
+            }
+            let next = copyVideoFile(from: rotated, toAssetsDir: t.assets)
+            var nextOK = false
+            if case .success = next { nextOK = true }
+            check("strip-timeout-\(tag)-following-choose-succeeds", nextOK && summarizeTracks(url: t.slot)?.otherTracks == 0
+                  && fingerprint(t.slot)?.transform == fr0?.transform && partials(t.assets).isEmpty)
+        }
+        // Real stripper with a timeout shorter than any export: the unstopped/stopped decision is the production one.
+        let realOut = dir.appendingPathComponent("real-timeout-out.mp4")
+        var realErr: VideoStripError?
+        do { _ = try stripToVideoOnly(src: withAudio, dst: realOut, timeoutSec: 0.0001, graceSec: 20) } catch { realErr = error as? VideoStripError }
+        check("strip-timeout-real-stripper-reports-timeout", realErr?.reason.hasPrefix("strip timed out") == true)
+        check("strip-timeout-error-flags", stripTimeoutError(stopped: false).exportStillRunning && !stripTimeoutError(stopped: true).exportStillRunning)
+        // Startup cleanup removes stale partials of both naming schemes and nothing else.
+        let sd = dir.appendingPathComponent("stale-\(UUID().uuidString)")
+        try? fm.createDirectory(at: sd, withIntermediateDirectories: true)
+        for n in ["bg.mp4", "bg.mp4.partial", "bg.mp4.\(UUID().uuidString).partial", "other.txt"] { try? Data("x".utf8).write(to: sd.appendingPathComponent(n)) }
+        cleanStalePartials(in: sd)
+        check("strip-cleanup-removes-stale-partials-only", ((try? fm.contentsOfDirectory(atPath: sd.path)) ?? []).sorted() == ["bg.mp4", "other.txt"])
+
+        // Migration: strips an audio slot once, then skips; skips a missing and a video-only slot; failure leaves the slot intact.
+        let m = dir.appendingPathComponent("mig-\(UUID().uuidString)")
+        try? fm.createDirectory(at: m, withIntermediateDirectories: true)
+        check("migrate-missing-slot-skipped", migrateSlotToVideoOnly(assetsDir: m) == .skipped)
+        try? fm.copyItem(at: withAudio, to: m.appendingPathComponent("bg.mp4"))
+        check("migrate-failure-leaves-slot", migrateSlotToVideoOnly(assetsDir: m, stripper: failing) == .failed
+              && fm.contentsEqual(atPath: withAudio.path, andPath: m.appendingPathComponent("bg.mp4").path)
+              && partials(m).isEmpty)
+        check("migrate-audio-slot-stripped", migrateSlotToVideoOnly(assetsDir: m) == .stripped)
+        let fm1 = fingerprint(m.appendingPathComponent("bg.mp4"))
+        check("migrate-output-video-identical", fm1?.otherTracks == 0 && fm1?.samples == fa?.samples && fm1?.payloadSHA256 == fa?.payloadSHA256 && fm1?.codec == fa?.codec && fm1?.transform == fa?.transform)
+        check("migrate-second-run-skipped", migrateSlotToVideoOnly(assetsDir: m) == .skipped)
+        let m2 = dir.appendingPathComponent("mig-\(UUID().uuidString)")
+        try? fm.createDirectory(at: m2, withIntermediateDirectories: true)
+        try? fm.copyItem(at: videoOnly, to: m2.appendingPathComponent("bg.mp4"))
+        check("migrate-video-only-slot-skipped", migrateSlotToVideoOnly(assetsDir: m2) == .skipped
+              && fm.contentsEqual(atPath: videoOnly.path, andPath: m2.appendingPathComponent("bg.mp4").path))
     }
 
     static func flashAlpha(elapsedMs: Double, peakAlpha: Double, riseMs: Double = 20, decayMs: Double = 120) -> Double {

@@ -202,10 +202,7 @@ enum AppStorageManager {
             return
         }
 
-        let leftoverPartial = assetsDest.appendingPathComponent("bg.mp4.partial")
-        if fm.fileExists(atPath: leftoverPartial.path) {
-            try? fm.removeItem(at: leftoverPartial)
-        }
+        cleanStalePartials(in: assetsDest)
 
         // FIX 2: use content hash rather than CFBundleVersion as the reseed marker.
         let currentHash: String

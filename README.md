@@ -43,10 +43,15 @@ Using it:
 - The app shows in the Dock and also has a menu-bar icon (top right). The menu-bar
   icon holds all the controls.
 - The wallpaper starts black. Click the menu-bar icon, choose "Choose video...", and
-  pick an `.mp4` file (MPEG-4/H.264). The app copies it into its own storage
+  pick an `.mp4` file (MPEG-4/H.264). The app stores a copy in its own storage
   (`~/Library/Application Support/OnlyWallpapers/web/assets/bg.mp4`, a single slot
-  overwritten on each new pick) and plays it immediately across all your displays.
-  The choice persists across launches, and you can delete the original file afterward.
+  overwritten on each new pick) and plays it immediately across all your displays,
+  kept frame-aligned between screens. The stored copy is video-only: any audio track
+  is dropped (the wallpaper is silent, and audio slows down the sync); the picture is
+  copied as-is, never re-encoded. The choice persists across launches, and you can
+  delete the original file afterward.
+- Known issue: a brief stutter can show at the moment the video loops back to the
+  start (a seamless loop is planned).
 - If the video is cropped awkwardly across your displays, use the "Framing" submenu
   (move, zoom, reset) to adjust which part of it shows.
 - Weather effects (tint, rain, lightning) are opt-in: choose "Use location for

@@ -68,9 +68,16 @@ that and form your own view from the code. Your value is the unbiased second rea
 - `MoodController.swift` + `MoodMapper.swift`: time-of-day + live-weather mood
   (opt-in CoreLocation, Open-Meteo, a pure mapper to a CSS filter); hands the tuple to
   `WallpaperController.applyMoodToAll`. `AppStorageManager` config.json is merge-based.
-- `web/`: `index.html` (video + overlay canvas), `style.css` (filters + mood transition),
-  `wallpaper.js` (sizes the stage to the union, translates to this screen's slice,
-  autoplay kick, framing + mood setters).
+- `VideoSession.swift`: one shared playback session (epochMs, sourceRev, durationSec,
+  seed) owned by `WallpaperController` and injected into every view, so all displays
+  follow one clock (ow-blz.5, DEC-004).
+- `VideoStrip.swift`: Choose video stores a video-only copy (passthrough, no re-encode)
+  plus a one-time launch migration of an existing slot (ow-blz.9).
+- `web/`: `index.html` (video + overlay canvas, no autoplay/loop), `style.css` (filters +
+  mood transition), `wallpaper.js` (sizes the stage to the union, translates to this
+  screen's slice, the sync controller that owns play() and the wrap with playbackRate
+  fixed at 1.0 and guarded seeks, framing + mood setters, overlay effects; storm lightning
+  is a pure function of the shared seed and wall clock).
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
 ## Beads Issue Tracker

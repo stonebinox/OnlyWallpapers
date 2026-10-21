@@ -221,10 +221,15 @@ Last updated: 2026-10-07
   verified) with a one-time launch migration of an existing slot (`VideoStrip.swift`). Measured on
   4K60 video-only: pairwise p50 about 1 ms, max about 12 ms, 0 corrective seeks, 55 to 57 fps.
 
+### Released
+- v0.1.0 (2026-10-19) and v0.1.1 (2026-10-21, seek-storm fix + video-only storage) on
+  GitHub Releases. The stable link
+  `https://github.com/stonebinox/OnlyWallpapers/releases/latest/download/OnlyWallpapers.zip`
+  always serves the newest release and is linked from anoopsanthanam.com. Version lives in
+  `scripts/package-app.sh` (VERSION, BUILD_NUMBER); package-check reads it from there.
+
 ### Next Step
-Publish v0.1.0 on GitHub Releases (ow-t4r.5, needs the user's explicit go-ahead) and
-link `https://github.com/stonebinox/OnlyWallpapers/releases/latest/download/OnlyWallpapers.zip`
-from anoopsanthanam.com. Then: ow-9m6 (lock-screen poster frame), ow-57k (crossfading
+ow-blz.11 (seamless loop: the user sees a brief stutter at the wrap seek), then: ow-9m6 (lock-screen poster frame), ow-57k (crossfading
 video playlist), ow-aqx.16 (wind-only effect), ow-aad.3 (launch at login), ow-aqx.7
 (fuller controls incl. effects toggle).
 
@@ -234,3 +239,5 @@ video playlist), ow-aqx.16 (wind-only effect), ow-aad.3 (launch at login), ow-aq
   applied by CSS left/top positioning, not a CSS transform).
 - DEC-003: public distribution as an ad-hoc signed, non-notarized GitHub Release with a
   black default and a regular Dock app.
+- DEC-004: cross-display sync via a shared wall clock, playbackRate fixed at 1.0, guarded seeks
+  only, and video-only storage of chosen videos.

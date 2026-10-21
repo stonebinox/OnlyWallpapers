@@ -133,10 +133,11 @@ OnlyWallpapers/
 │   ├── WallpaperWindow.swift         # borderless desktop-layer, click-through window
 │   ├── WebWallpaperView.swift        # WKWebView (opaque base + black fallback, local file access); applies framing + mood + sync session
 │   ├── VideoSession.swift            # shared playback session (epochMs, sourceRev, durationSec, seed) for cross-display sync (ow-blz.5)
+│   ├── VideoStrip.swift              # chosen video stored video-only (passthrough, no re-encode) + one-time launch migration (ow-blz.9)
 │   └── web/                          # render layer; hot-editable via WALLPAPER_WEB_DIR
 │       ├── index.html  style.css  wallpaper.js
 │       └── assets/                   # bg.mp4 etc (gitignored)
-├── scripts/                          # smoke-run, webdir-check, package-app/check, rebuild-check, video-check, framing-check, mood-check, overlay-check, lightning-check, rain-check, sync-check
+├── scripts/                          # smoke-run, webdir-check, package-app/check, rebuild-check, video-check, framing-check, mood-check, overlay-check, lightning-check, rain-check, sync-check, strip-check
 └── ow-local/                         # knowledge repo (folder, same git history)
 ```
 
@@ -148,6 +149,16 @@ OnlyWallpapers/
 
 ## Testing
 Every code change ships with tests. UI/visual behavior is verified in Phase 5.
+
+Gate environment (learned the hard way, ow-blz.5/.8):
+- Launch gates (sync, lightning, rain, overlay, package) need an UNLOCKED screen, uncovered
+  desktops on every display, and no other OnlyWallpapers instance running. Covered or locked
+  windows are throttled by WebKit (a few presented fps), which shows up as fake flakes.
+- Test fixtures must mirror real user content. The sync gate's cheap 30 fps short-GOP clip
+  hid a seek storm that only appears on 4K 60 fps long-GOP video; keep a user-profile fixture.
+- Run long Sonnet dispatches, Codex reviews and gates with the Bash tool's
+  `run_in_background`, never a detached `( ... &)`: only tracked jobs notify on completion.
+  Have Sonnet append to a progress log in the scratchpad so a long run is observable.
 
 ## Knowledge
 Durable design knowledge lives in `ow-local/` (see `ow-local/README.md`). Update

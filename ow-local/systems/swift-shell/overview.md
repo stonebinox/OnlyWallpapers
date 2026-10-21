@@ -60,6 +60,16 @@ slice geometry. The per-screen slice geometry is now injected into the web layer
   coordinator). Logs `ONLYWALLPAPERS_STATUSITEM created=<bool>`. Since ow-t4r.6 the app can
   also be quit from the Dock or the app menu (Cmd-Q); the status menu also has "About
   OnlyWallpapers" as its first item.
+- **VideoStrip** (ow-blz.9, done): Choose video stores a VIDEO-ONLY copy in the single
+  `bg.mp4` slot. A source with audio (or any non-video track) goes through
+  AVMutableComposition (video track only, transform kept) + AVAssetExportSession
+  passthrough, so the bitstream is untouched (gate compares per-packet payload hashes);
+  video-only sources take the plain copy path; failure falls back to copying the
+  original. Every operation writes its own `bg.mp4.<uuid>.partial`, a timed-out export is
+  cancelled and awaited, and stale partials are cleaned on the next operation or launch.
+  At launch a one-time migration strips an existing slot and calls
+  `WallpaperController.reloadVideo()` (new source revision). Logs
+  `ONLYWALLPAPERS_VIDEO strip=...` / `migrate=stripped|skipped|failed`.
 - **AppStorageManager** (ow-aqx.2 + ow-aqx.6 + ow-aqx.15, done): owns app-storage. Seeds
   the writable web dir (see Web Asset Resolution) and owns `config.json` (sibling of
   `web/`). Config I/O is now MERGE-based (ow-aqx.15): a `writeFraming` preserves the

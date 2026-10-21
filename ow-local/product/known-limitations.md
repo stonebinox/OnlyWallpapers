@@ -52,4 +52,17 @@ Trade-offs we have accepted, with the reason. Revisit these as the project grows
 - **Launch at login not wired up.** Manual run for now (ow-aad.3). The menu-bar Quit
   item (ow-aad.5) is the only in-app way to stop it.
 - **Autoplay quirk.** The `<video>` must be `muted` + `playsinline` with a JS
-  `.play()` kick or it will not start on its own.
+  `.play()` kick or it will not start on its own. (Since ow-blz.5 there is no autoplay
+  or loop attribute; the sync controller owns play() and the wrap.)
+- **Loop stutter (ow-blz.11).** The sync controller wraps by seeking every display to 0
+  at the same instant; even a keyframe seek drops a few frames, visible on 4K60 clips.
+- **Sync depends on video-only storage (ow-blz.9).** With an audio track present every
+  WebKit seek costs 150 to 450 ms, limiting cross-display sync to about 0.2 s. Chosen
+  videos are stored video-only; if the strip ever fails the app falls back to the
+  original copy (logged) and sync degrades gracefully without a seek storm.
+- **No playbackRate correction.** Any playbackRate change in WebKit loses 105 to 170 ms of
+  presented timeline instantly, so the controller never nudges speed; residual error is
+  corrected only by guarded seeks.
+- **Weather is model-based (ow-aqx.17).** Open-Meteo current conditions miss small local
+  convective rain; on 2026-10-18 the model, both Bengaluru airport METARs and RainViewer
+  radar all showed nothing during real rain at the user's location.

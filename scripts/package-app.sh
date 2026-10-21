@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Single source of truth for the release version.
-VERSION="0.1.0"
-BUILD_NUMBER="1"
+VERSION="0.1.1"
+BUILD_NUMBER="2"
 BUNDLE_ID="com.anoopsanthanam.onlywallpapers"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

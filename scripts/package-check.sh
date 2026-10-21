@@ -105,6 +105,7 @@ fi
 # --- Step 2b: release packaging asserts (ow-t4r.1, ow-t4r.3) ---
 echo "[release] Checking black default, identity, signature, zip..."
 VERSION_EXPECT="$(grep -E '^VERSION=' "$REPO_ROOT/scripts/package-app.sh" | head -1 | sed -E 's/^VERSION="([^"]*)".*/\1/')"
+BUILD_EXPECT="$(grep -E '^BUILD_NUMBER=' "$REPO_ROOT/scripts/package-app.sh" | head -1 | sed -E 's/^BUILD_NUMBER="([^"]*)".*/\1/')"
 
 MP4_FOUND="$(find "$APP" -type f \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.webm' -o -iname '*.m4v' \) 2>/dev/null)"
 if [ -z "$MP4_FOUND" ]; then
@@ -128,10 +129,10 @@ else
 fi
 
 BUILD_VER="$(defaults read "$APP/Contents/Info" CFBundleVersion 2>/dev/null || true)"
-if [[ "$BUILD_VER" =~ ^[0-9]+$ ]]; then
-    pass "CFBundleVersion=$BUILD_VER (build number)"
+if [[ "$BUILD_VER" =~ ^[0-9]+$ ]] && [ "$BUILD_VER" = "$BUILD_EXPECT" ]; then
+    pass "CFBundleVersion=$BUILD_VER (matches package-app.sh BUILD_NUMBER)"
 else
-    fail "CFBundleVersion not a build number (got: '$BUILD_VER')"
+    fail "CFBundleVersion wrong (got: '$BUILD_VER', expected '$BUILD_EXPECT')"
 fi
 
 COPYRIGHT="$(defaults read "$APP/Contents/Info" NSHumanReadableCopyright 2>/dev/null || true)"
@@ -646,8 +647,9 @@ if echo "$ABOUT_LINE" | grep -Eq 'visible=true( |$)'; then
 else
     fail "About panel not visible: '$ABOUT_LINE'"
 fi
-if echo "$ABOUT_LINE" | grep -Eq 'version=0\.1\.0( |$)'; then
-    pass "About panel version=0.1.0"
+VERSION_RE="${VERSION_EXPECT//./\\.}"
+if echo "$ABOUT_LINE" | grep -Eq "version=${VERSION_RE}( |\$)"; then
+    pass "About panel version=$VERSION_EXPECT"
 else
     fail "About version wrong: '$ABOUT_LINE'"
 fi
